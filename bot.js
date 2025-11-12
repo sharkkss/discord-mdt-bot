@@ -1,12 +1,31 @@
+// Check if the bot is running on Render or locally
+const port = process.env.PORT || 3000;  // Render provides a port, fallback to 3000 locally
+
+// Create a simple Express app to keep the server alive (even though bot doesn't require it)
+const express = require('express');
+const app = express();
+
+// A simple endpoint to keep the service running
+app.get('/', (req, res) => {
+  res.send('Bot is running');
+});
+
+// Listen on the provided port
+app.listen(port, () => {
+  console.log(`Bot is listening on port ${port}`);
+});
+
+
+// ------------------ DISCORD + GOOGLE SHEETS SETUP ------------------
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { google } = require('googleapis');
 const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
-console.log("Bot Token:", process.env.DISCORD_TOKEN);  // Replace with your actual bot token
-const clientId = '1437985374398840873';  // Replace with your bot's client ID
-const guildId = '1024627335707762688';  // Replace with the server ID where you want to register the command
+console.log("Bot Token:", process.env.DISCORD_TOKEN);
+const clientId = '1437985374398840873';
+const guildId = '1024627335707762688';
 
 const sheets = google.sheets('v4');
-const spreadsheetId = '1VrYFm0EquJGNkyqo1OuLUWEUtPmnU1_B0cWZ0t1g7n8';  // Replace with your Google Sheets ID
+const spreadsheetId = '1VrYFm0EquJGNkyqo1OuLUWEUtPmnU1_B0cWZ0t1g7n8';
 
 const auth = new google.auth.GoogleAuth({
   credentials: googleCredentials,
@@ -23,8 +42,8 @@ const client = new Client({
   ],
 });
 
-let caseData = {}; // Store the user input
-let caseNumber = 1000; // Starting Case Number
+let caseData = {};
+let caseNumber = 1000;
 
 // Event when the bot is ready
 client.once('clientReady', () => {
@@ -42,7 +61,7 @@ client.on('ready', () => {
     .addStringOption(option => option.setName('charge').setDescription('Charge or incident').setRequired(true))
     .addStringOption(option => option.setName('location').setDescription('Location of the incident').setRequired(true))
     .addStringOption(option => option.setName('evidence').setDescription('Evidence description').setRequired(true))
-    .addStringOption(option => option.setName('summary').setDescription('Summary or short note for the case').setRequired(false))  // New Summary field
+    .addStringOption(option => option.setName('summary').setDescription('Summary or short note for the case').setRequired(false))
     .addAttachmentOption(option => option.setName('evidenceimage').setDescription('Evidence image (file upload)'));
 
   client.guilds.cache.get(guildId).commands.create(data);
@@ -58,20 +77,17 @@ client.on('interactionCreate', async (interaction) => {
   const charge = interaction.options.getString('charge');
   const location = interaction.options.getString('location');
   const evidence = interaction.options.getString('evidence');
-  const summary = interaction.options.getString('summary');  // Get the summary input
+  const summary = interaction.options.getString('summary');
   const evidenceImage = interaction.options.getAttachment('evidenceimage');
 
   if (interaction.commandName === 'mdt') {
     await interaction.deferReply();
 
-    // Generate case number and date
     const date = new Date().toLocaleDateString();
     const caseNum = type === 'Arrest Log' ? `AL-${date.replace(/\//g, '')}-${caseNumber++}` : `IR-${date.replace(/\//g, '')}-${caseNumber++}`;
 
-    // Store the case data including the summary
     caseData = { caseNum, date, type, officer, suspect, charge, location, evidence, summary, evidenceImage };
 
-    // Create a fancy embed with the current report details
     const embed = new EmbedBuilder()
       .setColor(0x0099ff)
       .setTitle(`🚓 **${type} Report** 🚓`)
@@ -86,7 +102,7 @@ client.on('interactionCreate', async (interaction) => {
         { name: '🔎 **Evidence**', value: caseData.evidence, inline: false },
         { name: '📝 **Summary**', value: caseData.summary ? caseData.summary : 'No summary provided', inline: false },
       )
-      .setImage(caseData.evidenceImage ? caseData.evidenceImage.url : '')  // Add the image here if it exists
+      .setImage(caseData.evidenceImage ? caseData.evidenceImage.url : '')
       .setFooter({ text: `MDT Report Generated` })
       .setTimestamp();
 
@@ -95,7 +111,6 @@ client.on('interactionCreate', async (interaction) => {
       new ButtonBuilder().setCustomId('cancel_mdt').setLabel('❌ Cancel Report').setStyle(ButtonStyle.Danger)
     );
 
-    // Respond with the embed and buttons
     await interaction.editReply({ embeds: [embed], components: [confirmButton] });
   }
 });
@@ -105,7 +120,6 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
   if (interaction.customId === 'confirm_mdt') {
-    // Log case to Google Sheets based on the report type (Arrest Log or Incident Report)
     const caseDataArray = [
       caseData.caseNum,
       caseData.date,
@@ -124,7 +138,7 @@ client.on('interactionCreate', async (interaction) => {
       const authClient = await auth.getClient();
       const request = {
         spreadsheetId,
-        range: range,  // Select the correct sheet based on the report type
+        range,
         valueInputOption: 'RAW',
         resource: { values: [caseDataArray] },
         auth: authClient,
@@ -148,23 +162,21 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommand()) return;
 
   if (interaction.commandName === 'officerstats') {
-    const officerName = interaction.options.getString('officer'); // Officer name from the command
+    const officerName = interaction.options.getString('officer');
 
-    // Fetch cases from both "Arrest Log" and "Incident Report"
     const authClient = await auth.getClient();
     const requestArrest = {
       spreadsheetId,
-      range: 'Arrest Log!A2:I',  // Assuming data starts from row 2
+      range: 'Arrest Log!A2:I',
       auth: authClient,
     };
     const requestIncident = {
       spreadsheetId,
-      range: 'Incident Report!A2:I',  // Assuming data starts from row 2
+      range: 'Incident Report!A2:I',
       auth: authClient,
     };
 
     try {
-      // Fetch data for Arrest Log
       const responseArrest = await sheets.spreadsheets.values.get(requestArrest);
       const rowsArrest = responseArrest.data.values;
       let totalCases = 0;
@@ -173,31 +185,29 @@ client.on('interactionCreate', async (interaction) => {
 
       if (rowsArrest && rowsArrest.length > 0) {
         rowsArrest.forEach(row => {
-          if (row[2] && row[2] === officerName) { // Check if the officer matches
+          if (row[2] && row[2] === officerName) {
             totalCases++;
-            arrestCases++; // Now every entry for the officer is counted as an arrest
+            arrestCases++;
           }
         });
       }
 
-      // Fetch data for Incident Reports
       const responseIncident = await sheets.spreadsheets.values.get(requestIncident);
       const rowsIncident = responseIncident.data.values;
 
       if (rowsIncident && rowsIncident.length > 0) {
         rowsIncident.forEach(row => {
-          if (row[2] && row[2] === officerName) { // Check if the officer matches
+          if (row[2] && row[2] === officerName) {
             incidentCases++;
           }
         });
       }
 
-      // Send the response with officer stats
       const statsEmbed = new EmbedBuilder()
         .setColor(0x0099ff)
         .setTitle(`${officerName}'s Stats 📊`)
         .addFields(
-          { name: '📚 Total Cases Handled', value: `${totalCases + incidentCases}` },  // Total cases = Arrest + Incident
+          { name: '📚 Total Cases Handled', value: `${totalCases + incidentCases}` },
           { name: '🚔 Arrests Made', value: `${arrestCases}` },
           { name: '📄 Incident Reports', value: `${incidentCases}` },
         );
@@ -212,9 +222,3 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
-
-
-
-
-
