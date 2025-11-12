@@ -56,8 +56,8 @@ const guildIds = [
 ];
 
 // ✅ Role/Channel Guard — fill with your real IDs
-const ALLOWED_ROLES = [/* '123456789012345678' */];
-const ALLOWED_CHANNELS = [/* '234567890123456789' */];
+const ALLOWED_ROLES = [/* '1433388812330995843' */];
+const ALLOWED_CHANNELS = [/* '1376107879592886282' */];
 
 // 📄 Sheets API
 const sheets = google.sheets('v4');
@@ -473,3 +473,4 @@ client.on('interactionCreate', async (interaction) => {
 client.login(process.env.DISCORD_TOKEN)
   .then(() => console.log('🔐 Login successful.'))
   .catch((e) => console.error('🔐 Login failed:', e));
+
