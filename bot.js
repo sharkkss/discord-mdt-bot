@@ -1,16 +1,14 @@
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// 🎉 MDT BOT (Fancy + Emoji Edition)
+// 🎉 MDT BOT (Fancy + Emoji Edition) — Public Replies
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
 // ✨ What changed:
-// - Richer embeds with emojis, author, footer, and timestamp
-// - Crisp ✅ Confirm / ❌ Cancel buttons with emoji labels
-// - Pretty console logs with emojis
-// - Presence status ("on duty")
+// - Public (non-ephemeral) replies for /mdt and /officerstats
+// - Rich embeds with emojis, author, footer, timestamp
+// - Presence status (“on duty”)
 // - Manila timezone date + compact case number format
 // - Slash command improvements (choices for type)
-// - Officer stats with a clean, emoji-forward embed
+// - Officer stats embed w/ emojis
 // - Safer checks for env vars + Google credentials
-// - Ephemeral replies to keep channels tidy
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
 
 // ------------------ 🚦 KEEP-ALIVE SERVER ------------------
@@ -164,7 +162,8 @@ client.on('interactionCreate', async (interaction) => {
       const { commandName } = interaction;
 
       if (commandName === 'mdt') {
-        await interaction.deferReply({ ephemeral: true });
+        // PUBLIC preview
+        await interaction.deferReply();
 
         const type = interaction.options.getString('type');
         const officer = interaction.options.getString('officer');
@@ -212,11 +211,14 @@ client.on('interactionCreate', async (interaction) => {
             { name: '🧾 Evidence', value: caseData.evidence || '—', inline: false },
             { name: '🗒️ Summary', value: caseData.summary || 'No summary provided', inline: false }
           )
-          .setImage(caseData.evidenceImage ? caseData.evidenceImage.url : null)
           .setFooter({
             text: '✅ Press Confirm to log to Google Sheets • ❌ Cancel to discard',
           })
           .setTimestamp();
+
+        if (caseData.evidenceImage) {
+          embed.setImage(caseData.evidenceImage.url);
+        }
 
         const buttons = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
@@ -235,7 +237,8 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (commandName === 'officerstats') {
-        await interaction.deferReply({ ephemeral: true });
+        // PUBLIC result
+        await interaction.deferReply();
 
         const officerName = interaction.options.getString('officer');
         const authClient = await auth.getClient();
@@ -332,4 +335,6 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN).then(() => console.log('🔐 Login successful.')).catch((e) => console.error('🔐 Login failed:', e));
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log('🔐 Login successful.'))
+  .catch((e) => console.error('🔐 Login failed:', e));
