@@ -9,7 +9,7 @@ const sheets = google.sheets('v4');
 const spreadsheetId = '1VrYFm0EquJGNkyqo1OuLUWEUtPmnU1_B0cWZ0t1g7n8';  // Replace with your Google Sheets ID
 
 const auth = new google.auth.GoogleAuth({
-  credentials,
+  credentials: googleCredentials,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
@@ -212,4 +212,5 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
 
