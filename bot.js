@@ -1,28 +1,22 @@
-// Check if the bot is running on Render or locally
-const port = process.env.PORT || 3000;  // Render provides a port, fallback to 3000 locally
-
-// Create a simple Express app to keep the server alive (even though bot doesn't require it)
+// ------------------ KEEP-ALIVE SERVER ------------------
 const express = require('express');
 const app = express();
+const port = process.env.PORT || 3000;
 
-// A simple endpoint to keep the service running
-app.get('/', (req, res) => {
-  res.send('Bot is running');
-});
-
-// Listen on the provided port
-app.listen(port, () => {
-  console.log(`Bot is listening on port ${port}`);
-});
+app.get('/', (req, res) => res.send('Bot is running'));
+app.listen(port, () => console.log(`Bot is listening on port ${port}`));
 
 
 // ------------------ DISCORD + GOOGLE SHEETS SETUP ------------------
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes } = require('discord.js');
 const { google } = require('googleapis');
 const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
-console.log("Bot Token:", process.env.DISCORD_TOKEN);
+
 const clientId = '1437985374398840873';
-const guildId = '1024627335707762688';
+const guildIds = [
+  '1024627335707762688', // your main test server
+  'ADD_ANOTHER_GUILD_ID_HERE' // add more if needed
+];
 
 const sheets = google.sheets('v4');
 const spreadsheetId = '1VrYFm0EquJGNkyqo1OuLUWEUtPmnU1_B0cWZ0t1g7n8';
@@ -32,7 +26,7 @@ const auth = new google.auth.GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// Initialize the Discord client
+// Initialize Discord client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -46,41 +40,64 @@ let caseData = {};
 let caseNumber = 1000;
 
 // Event when the bot is ready
-client.once('clientReady', () => {
-  console.log('Bot is online!');
+client.once('clientReady', async () => {
+  console.log(`Bot is online as ${client.user.tag}`);
+
+  // -------- Register Slash Commands (multi-guild) --------
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('mdt')
+      .setDescription('Start the MDT process with interactive fields')
+      .addStringOption(opt => opt.setName('type').setDescription('Type of report (Arrest Log or Incident Report)').setRequired(true))
+      .addStringOption(opt => opt.setName('officer').setDescription('Officer name').setRequired(true))
+      .addStringOption(opt => opt.setName('suspect').setDescription('Suspect name').setRequired(true))
+      .addStringOption(opt => opt.setName('charge').setDescription('Charge or incident').setRequired(true))
+      .addStringOption(opt => opt.setName('location').setDescription('Location of the incident').setRequired(true))
+      .addStringOption(opt => opt.setName('evidence').setDescription('Evidence description').setRequired(true))
+      .addStringOption(opt => opt.setName('summary').setDescription('Summary or short note for the case').setRequired(false))
+      .addAttachmentOption(opt => opt.setName('evidenceimage').setDescription('Evidence image (file upload)')),
+
+    new SlashCommandBuilder()
+      .setName('officerstats')
+      .setDescription('View officer performance stats')
+      .addStringOption(opt => opt.setName('officer').setDescription('Officer name').setRequired(true))
+  ];
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+  for (const id of guildIds) {
+    try {
+      await rest.put(Routes.applicationGuildCommands(clientId, id), { body: commands });
+      console.log(`✅ Commands registered for guild ${id}`);
+    } catch (err) {
+      console.error(`❌ Error registering commands for ${id}:`, err);
+    }
+  }
+
+  // Optional: Register globally too
+  /*
+  await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  console.log("🌍 Global commands registered (may take up to 1 hour)");
+  */
 });
 
-// Register Slash Commands
-client.on('ready', () => {
-  const data = new SlashCommandBuilder()
-    .setName('mdt')
-    .setDescription('Start the MDT process with interactive fields')
-    .addStringOption(option => option.setName('type').setDescription('Type of report (Arrest Log or Incident Report)').setRequired(true))
-    .addStringOption(option => option.setName('officer').setDescription('Officer name').setRequired(true))
-    .addStringOption(option => option.setName('suspect').setDescription('Suspect name').setRequired(true))
-    .addStringOption(option => option.setName('charge').setDescription('Charge or incident').setRequired(true))
-    .addStringOption(option => option.setName('location').setDescription('Location of the incident').setRequired(true))
-    .addStringOption(option => option.setName('evidence').setDescription('Evidence description').setRequired(true))
-    .addStringOption(option => option.setName('summary').setDescription('Summary or short note for the case').setRequired(false))
-    .addAttachmentOption(option => option.setName('evidenceimage').setDescription('Evidence image (file upload)'));
 
-  client.guilds.cache.get(guildId).commands.create(data);
-});
-
-// Handle slash command interaction for MDT report creation
+// ------------------ MDT COMMAND HANDLER ------------------
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommand()) return;
 
-  const type = interaction.options.getString('type');
-  const officer = interaction.options.getString('officer');
-  const suspect = interaction.options.getString('suspect');
-  const charge = interaction.options.getString('charge');
-  const location = interaction.options.getString('location');
-  const evidence = interaction.options.getString('evidence');
-  const summary = interaction.options.getString('summary');
-  const evidenceImage = interaction.options.getAttachment('evidenceimage');
+  const { commandName } = interaction;
 
-  if (interaction.commandName === 'mdt') {
+  if (commandName === 'mdt') {
+    const type = interaction.options.getString('type');
+    const officer = interaction.options.getString('officer');
+    const suspect = interaction.options.getString('suspect');
+    const charge = interaction.options.getString('charge');
+    const location = interaction.options.getString('location');
+    const evidence = interaction.options.getString('evidence');
+    const summary = interaction.options.getString('summary');
+    const evidenceImage = interaction.options.getAttachment('evidenceimage');
+
     await interaction.deferReply();
 
     const date = new Date().toLocaleDateString();
@@ -90,32 +107,67 @@ client.on('interactionCreate', async (interaction) => {
 
     const embed = new EmbedBuilder()
       .setColor(0x0099ff)
-      .setTitle(`🚓 **${type} Report** 🚓`)
-      .setDescription(`Here are the details of the **${type}** report created.`)
+      .setTitle(`🚓 ${type} Report`)
       .addFields(
-        { name: '📝 **Case Number**', value: caseData.caseNum, inline: true },
-        { name: '📅 **Date**', value: caseData.date, inline: true },
-        { name: '👮‍♂️ **Officer**', value: caseData.officer, inline: true },
-        { name: '👤 **Suspect**', value: caseData.suspect, inline: true },
-        { name: '⚖️ **Charge/Incident**', value: caseData.charge, inline: true },
-        { name: '📍 **Location**', value: caseData.location, inline: true },
-        { name: '🔎 **Evidence**', value: caseData.evidence, inline: false },
-        { name: '📝 **Summary**', value: caseData.summary ? caseData.summary : 'No summary provided', inline: false },
+        { name: 'Case Number', value: caseData.caseNum, inline: true },
+        { name: 'Date', value: caseData.date, inline: true },
+        { name: 'Officer', value: caseData.officer, inline: true },
+        { name: 'Suspect', value: caseData.suspect, inline: true },
+        { name: 'Charge/Incident', value: caseData.charge, inline: true },
+        { name: 'Location', value: caseData.location, inline: true },
+        { name: 'Evidence', value: caseData.evidence, inline: false },
+        { name: 'Summary', value: caseData.summary || 'No summary provided', inline: false },
       )
-      .setImage(caseData.evidenceImage ? caseData.evidenceImage.url : '')
-      .setFooter({ text: `MDT Report Generated` })
+      .setImage(caseData.evidenceImage ? caseData.evidenceImage.url : null)
       .setTimestamp();
 
-    const confirmButton = new ActionRowBuilder().addComponents(
+    const buttons = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('confirm_mdt').setLabel('✅ Confirm Report').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('cancel_mdt').setLabel('❌ Cancel Report').setStyle(ButtonStyle.Danger)
     );
 
-    await interaction.editReply({ embeds: [embed], components: [confirmButton] });
+    await interaction.editReply({ embeds: [embed], components: [buttons] });
+  }
+
+  if (commandName === 'officerstats') {
+    const officerName = interaction.options.getString('officer');
+
+    const authClient = await auth.getClient();
+    const arrestReq = { spreadsheetId, range: 'Arrest Log!A2:I', auth: authClient };
+    const incidentReq = { spreadsheetId, range: 'Incident Report!A2:I', auth: authClient };
+
+    try {
+      const [arrestRes, incidentRes] = await Promise.all([
+        sheets.spreadsheets.values.get(arrestReq),
+        sheets.spreadsheets.values.get(incidentReq)
+      ]);
+
+      const arrestRows = arrestRes.data.values || [];
+      const incidentRows = incidentRes.data.values || [];
+
+      const arrestCases = arrestRows.filter(r => r[2] === officerName).length;
+      const incidentCases = incidentRows.filter(r => r[2] === officerName).length;
+      const totalCases = arrestCases + incidentCases;
+
+      const statsEmbed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`${officerName}'s Stats`)
+        .addFields(
+          { name: 'Total Cases', value: `${totalCases}` },
+          { name: 'Arrests Made', value: `${arrestCases}` },
+          { name: 'Incident Reports', value: `${incidentCases}` }
+        );
+
+      await interaction.reply({ embeds: [statsEmbed] });
+    } catch (err) {
+      console.error('Error fetching officer stats:', err);
+      await interaction.reply('❌ There was an error fetching the officer stats.');
+    }
   }
 });
 
-// Handle confirmation and cancellation of MDT report
+
+// ------------------ BUTTON INTERACTIONS ------------------
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -128,7 +180,7 @@ client.on('interactionCreate', async (interaction) => {
       caseData.charge,
       caseData.location,
       caseData.evidence,
-      caseData.summary ? caseData.summary : 'No summary provided',
+      caseData.summary || 'No summary provided',
       caseData.evidenceImage ? caseData.evidenceImage.url : 'No image provided'
     ];
 
@@ -136,88 +188,23 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
       const authClient = await auth.getClient();
-      const request = {
+      await sheets.spreadsheets.values.append({
         spreadsheetId,
         range,
         valueInputOption: 'RAW',
         resource: { values: [caseDataArray] },
         auth: authClient,
-      };
+      });
 
-      await sheets.spreadsheets.values.append(request);
       await interaction.update({ content: '✅ **MDT Report logged successfully!**', components: [] });
     } catch (err) {
       console.error('Error logging MDT report:', err);
-      await interaction.update({ content: '❌ There was an error logging the MDT report.', components: [] });
+      await interaction.update({ content: '❌ Error logging MDT report.', components: [] });
     }
   }
 
   if (interaction.customId === 'cancel_mdt') {
     await interaction.update({ content: '❌ **MDT Report entry canceled.**', components: [] });
-  }
-});
-
-// Officer Stats Command
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
-
-  if (interaction.commandName === 'officerstats') {
-    const officerName = interaction.options.getString('officer');
-
-    const authClient = await auth.getClient();
-    const requestArrest = {
-      spreadsheetId,
-      range: 'Arrest Log!A2:I',
-      auth: authClient,
-    };
-    const requestIncident = {
-      spreadsheetId,
-      range: 'Incident Report!A2:I',
-      auth: authClient,
-    };
-
-    try {
-      const responseArrest = await sheets.spreadsheets.values.get(requestArrest);
-      const rowsArrest = responseArrest.data.values;
-      let totalCases = 0;
-      let arrestCases = 0;
-      let incidentCases = 0;
-
-      if (rowsArrest && rowsArrest.length > 0) {
-        rowsArrest.forEach(row => {
-          if (row[2] && row[2] === officerName) {
-            totalCases++;
-            arrestCases++;
-          }
-        });
-      }
-
-      const responseIncident = await sheets.spreadsheets.values.get(requestIncident);
-      const rowsIncident = responseIncident.data.values;
-
-      if (rowsIncident && rowsIncident.length > 0) {
-        rowsIncident.forEach(row => {
-          if (row[2] && row[2] === officerName) {
-            incidentCases++;
-          }
-        });
-      }
-
-      const statsEmbed = new EmbedBuilder()
-        .setColor(0x0099ff)
-        .setTitle(`${officerName}'s Stats 📊`)
-        .addFields(
-          { name: '📚 Total Cases Handled', value: `${totalCases + incidentCases}` },
-          { name: '🚔 Arrests Made', value: `${arrestCases}` },
-          { name: '📄 Incident Reports', value: `${incidentCases}` },
-        );
-
-      await interaction.reply({ embeds: [statsEmbed] });
-
-    } catch (err) {
-      console.error('Error fetching officer stats:', err);
-      await interaction.reply('❌ There was an error fetching the officer stats.');
-    }
   }
 });
 
