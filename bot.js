@@ -1,9 +1,9 @@
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// 🚓 MDT BOT — Round 2
+// 🚓 MDT BOT — Round 2 (with pagination fix)
 //  • Penalties totals (fine + jail) from Penalties tab (A:E)
-//  • Quick-pick menus for Charges (by code group) and Location
+//  • Quick-pick menus for Charges (paginated) and Location
 //  • Audit log channel mirror (AUDIT_CHANNEL_ID)
-//  • Keeps: private/public preview, case thread, row link
+//  • Keeps: private/public preview, case thread, Google Sheets row link
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
 
 const express = require('express');
@@ -238,25 +238,51 @@ function buildMdtButtons() {
   );
 }
 
-function buildChargeMenus(pIndex) {
+// Build up to 4 select menus per page, plus a nav row (Prev/Next/Close)
+function buildChargeMenus(pIndex, page = 0) {
+  const groupsAll = Array.from(pIndex.byGroup.keys()).sort(); // ['100','200',...]
+  const pageSize = 4;
+  const totalPages = Math.max(1, Math.ceil(groupsAll.length / pageSize));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+
+  const start = safePage * pageSize;
+  const sliceGroups = groupsAll.slice(start, start + pageSize);
+
   const rows = [];
-  const groups = ['100','200','300','400','500','600'];
-  for (const g of groups) {
+  for (const g of sliceGroups) {
     const items = (pIndex.byGroup.get(g) || []).map(p => ({
       label: `${p.code} • ${p.offense}`.slice(0, 100),
-      value: p.offense, // we store name; totals accept name or code anyway
+      value: p.offense, // store name; totals accept name or code
       description: (p.description || '').slice(0, 100),
     }));
     if (!items.length) continue;
+
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`sel_charge_${g}`)
       .setPlaceholder(`${g}s • Select charges`)
       .setMinValues(0)
       .setMaxValues(Math.min(items.length, 25))
       .addOptions(items);
+
     rows.push(new ActionRowBuilder().addComponents(menu));
   }
-  return rows;
+
+  // Nav row (keeps total rows ≤ 5)
+  const nav = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`charges_prev_${safePage}`)
+      .setLabel('Prev').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage <= 0),
+    new ButtonBuilder()
+      .setCustomId(`charges_next_${safePage}`)
+      .setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId('charges_close')
+      .setLabel('Close').setEmoji('✖️').setStyle(ButtonStyle.Danger),
+  );
+
+  return { rows: [...rows, nav], page: safePage, totalPages };
 }
 
 function buildLocationMenu(locations) {
@@ -453,8 +479,16 @@ client.on('interactionCreate', async (interaction) => {
     else if (interaction.isButton()) {
       const key = sessionKey(interaction);
       const draft = sessions.get(key);
-      if (!draft) return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
-      if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
+
+      // For normal draft buttons, require an active draft
+      if (!interaction.customId.startsWith('charges_')) {
+        if (!draft) {
+          return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
+        }
+        if (interaction.user.id !== draft.userId) {
+          return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
+        }
+      }
 
       if (interaction.customId === 'pick_charges') {
         const penalties = await readPenaltiesFromSheet();
@@ -462,9 +496,12 @@ client.on('interactionCreate', async (interaction) => {
         draft.penaltyIndex = pIndex;
         sessions.set(key, draft);
 
-        const rows = buildChargeMenus(pIndex);
-        if (!rows.length) return interaction.reply({ content: '⚠️ No penalties configured.', flags: MessageFlags.Ephemeral });
-        return interaction.reply({ content: '🧾 Pick charges by group (you can open each menu):', components: rows, flags: MessageFlags.Ephemeral });
+        const { rows } = buildChargeMenus(pIndex, 0);
+        return interaction.reply({
+          content: '🧾 Pick charges by group (use Prev/Next to switch pages):',
+          components: rows,
+          flags: MessageFlags.Ephemeral,
+        });
       }
 
       if (interaction.customId === 'pick_location') {
@@ -472,6 +509,26 @@ client.on('interactionCreate', async (interaction) => {
         const rows = buildLocationMenu(locs);
         if (!rows.length) return interaction.reply({ content: '⚠️ No `Locations` tab or it is empty.', flags: MessageFlags.Ephemeral });
         return interaction.reply({ content: '📍 Pick a location:', components: rows, flags: MessageFlags.Ephemeral });
+      }
+
+      // Pagination nav buttons for charge menus
+      if (interaction.customId.startsWith('charges_prev_') || interaction.customId.startsWith('charges_next_')) {
+        const parts = interaction.customId.split('_'); // ['charges','prev','<page>'] or ['charges','next','<page>']
+        const dir = parts[1];
+        let page = Number(parts[2] || 0);
+        page = dir === 'next' ? page + 1 : page - 1;
+
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        const { rows } = buildChargeMenus(pIndex, page);
+
+        return interaction.update({
+          content: '🧾 Pick charges by group (use Prev/Next to switch pages):',
+          components: rows,
+        });
+      }
+      if (interaction.customId === 'charges_close') {
+        return interaction.update({ content: '✅ Charge picker closed.', components: [] });
       }
 
       if (interaction.customId === 'confirm_mdt') {
@@ -564,13 +621,11 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
 
       if (interaction.customId.startsWith('sel_charge_')) {
-        // Merge selected offenses into draft.charge
         const current = parseCSVSet(draft.charge);
         for (const v of interaction.values) current.add(v);
         draft.charge = setToCSV(current);
         sessions.set(key, draft);
 
-        // Update preview with recalculated totals
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         const totals = sumPenalties(pIndex, draft.charge);
@@ -582,7 +637,7 @@ client.on('interactionCreate', async (interaction) => {
           }
         } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
 
-        return interaction.update({ content: `🧾 Added ${interaction.values.length} charge(s). Current: ${draft.charge}`, components: [], flags: MessageFlags.Ephemeral });
+        return interaction.update({ content: `🧾 Added ${interaction.values.length} charge(s). Current: ${draft.charge}` });
       }
 
       if (interaction.customId === 'sel_location') {
@@ -600,7 +655,7 @@ client.on('interactionCreate', async (interaction) => {
           }
         } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
 
-        return interaction.update({ content: `📍 Location set to **${draft.location}**.`, components: [], flags: MessageFlags.Ephemeral });
+        return interaction.update({ content: `📍 Location set to **${draft.location}**.` });
       }
     }
 
@@ -619,7 +674,6 @@ client.on('interactionCreate', async (interaction) => {
         draft.summary = interaction.fields.getTextInputValue('summary').trim();
         sessions.set(key, draft);
 
-        // Recalc totals & update the thread preview
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         const totals = sumPenalties(pIndex, draft.charge);
