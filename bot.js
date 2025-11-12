@@ -1,9 +1,7 @@
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// 🚓 MDT BOT — Round 2 (with pagination fix)
-//  • Penalties totals (fine + jail) from Penalties tab (A:E)
-//  • Quick-pick menus for Charges (paginated) and Location
-//  • Audit log channel mirror (AUDIT_CHANNEL_ID)
-//  • Keeps: private/public preview, case thread, Google Sheets row link
+// 🚓 MDT BOT — Round 2 (safe defer patch)
+//  • Adds safeDefer() to handle 10062 Unknown interaction gracefully
+//  • Keeps pagination fix, penalties totals, location picker, audit log
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
 
 const express = require('express');
@@ -31,6 +29,10 @@ const {
   MessageFlags
 } = require('discord.js');
 const { google } = require('googleapis');
+
+// Global error handlers (avoid process crash on transient API errors)
+process.on('unhandledRejection', (e) => console.error('🔴 UnhandledRejection:', e));
+process.on('uncaughtException', (e) => console.error('🔴 UncaughtException:', e));
 
 if (!process.env.DISCORD_TOKEN) {
   console.error('❌ Missing DISCORD_TOKEN in environment.');
@@ -77,6 +79,7 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
   ],
 });
+client.on('error', (e) => console.error('🔴 Client error:', e));
 
 // 🗂️ Per-user session drafts (guild-scoped)
 const sessions = new Map(); // key: `${userId}:${guildId}` -> { draft }
@@ -99,6 +102,24 @@ function parseCSVSet(text) {
   return new Set(String(text||'').split(',').map(s=>s.trim()).filter(Boolean));
 }
 function setToCSV(set) { return Array.from(set).join(', '); }
+
+// 🔐 Safely acknowledge an interaction within 3s.
+// Returns true if acknowledged, false if token was already invalid (10062).
+async function safeDefer(interaction, ephemeral) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      if (ephemeral) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      else await interaction.deferReply();
+    }
+    return true;
+  } catch (e) {
+    if (e?.code === 10062) {
+      console.warn('⚠️ Interaction token expired before defer (cold start or slow host). Skipping.');
+      return false;
+    }
+    throw e;
+  }
+}
 
 // 🔢 Compute next case number by scanning the date-prefixed entries
 async function getNextCaseSeq(type) {
@@ -373,10 +394,9 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (commandName === 'mdt') {
-        // Public/Private toggle
         const makePrivate = interaction.options.getBoolean('private') ?? false;
-        if (makePrivate) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        else await interaction.deferReply();
+        const acked = await safeDefer(interaction, makePrivate);
+        if (!acked) return; // expired; stop processing to avoid crash
 
         const type = interaction.options.getString('type');
         const officer = interaction.options.getString('officer');
@@ -436,7 +456,8 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (commandName === 'officerstats') {
-        await interaction.deferReply();
+        const acked = await safeDefer(interaction, false);
+        if (!acked) return;
 
         const officerName = interaction.options.getString('officer');
         const authClient = await auth.getClient();
