@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { google } = require('googleapis');
-const credentials = require('./samp-pnp-bot-8ffa6d506133.json');
+const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
 const DISCORD_TOKEN = 'MTQzNzk4NTM3NDM5ODg0MDg3Mw.Gz3hDj.AUZzHeeYSmoTa2GETJ4xtq8aIJIh3Tzr6EKvU0';  // Replace with your actual bot token
 const clientId = '1437985374398840873';  // Replace with your bot's client ID
 const guildId = '1024627335707762688';  // Replace with the server ID where you want to register the command
@@ -212,3 +212,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
