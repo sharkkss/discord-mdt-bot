@@ -15,7 +15,7 @@ const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
 const clientId = '1437985374398840873';
 const guildIds = [
   '1024627335707762688', // your main test server
-  'ADD_ANOTHER_GUILD_ID_HERE' // add more if needed
+  '1072289637000814632' // add more if needed
 ];
 
 const sheets = google.sheets('v4');
@@ -209,3 +209,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
