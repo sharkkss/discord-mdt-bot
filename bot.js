@@ -31,23 +31,6 @@ client.once('clientReady', () => {
   console.log('Bot is online!');
 });
 
-// Check if the bot is running on Render or locally
-const port = process.env.PORT || 3000;  // Render provides a port, fallback to 3000 locally
-
-// Create a simple Express app to keep the server alive (even though bot doesn't require it)
-const express = require('express');
-const app = express();
-
-// A simple endpoint to keep the service running
-app.get('/', (req, res) => {
-  res.send('Bot is running');
-});
-
-// Listen on the provided port
-app.listen(port, () => {
-  console.log(`Bot is listening on port ${port}`);
-});
-
 // Register Slash Commands
 client.on('ready', () => {
   const data = new SlashCommandBuilder()
@@ -229,6 +212,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
 
 
 
