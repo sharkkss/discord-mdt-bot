@@ -40,7 +40,7 @@ let caseData = {};
 let caseNumber = 1000;
 
 // Event when the bot is ready
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   console.log(`Bot is online as ${client.user.tag}`);
 
   // -------- Register Slash Commands (multi-guild) --------
@@ -209,4 +209,5 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
 
