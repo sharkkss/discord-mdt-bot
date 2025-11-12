@@ -1,10 +1,9 @@
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// 🎉 MDT BOT — 3 Upgrades: Private Toggle + Case Thread + Row Link
-// ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// Adds:
-// 1) /mdt boolean option `private` (ephemeral preview when true)
-// 2) Auto-create a thread named after the Case Number and move preview there
-// 3) Link directly to the appended Google Sheets row on confirm (needs ARREST_GID/INCIDENT_GID)
+// 🚓 MDT BOT — Round 2
+//  • Penalties totals (fine + jail) from Penalties tab (A:E)
+//  • Quick-pick menus for Charges (by code group) and Location
+//  • Audit log channel mirror (AUDIT_CHANNEL_ID)
+//  • Keeps: private/public preview, case thread, row link
 // ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
 
 const express = require('express');
@@ -28,6 +27,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
   MessageFlags
 } = require('discord.js');
 const { google } = require('googleapis');
@@ -41,6 +41,8 @@ if (!process.env.GOOGLE_SHEETS_CREDENTIALS) {
   process.exit(1);
 }
 
+const AUDIT_CHANNEL_ID = process.env.AUDIT_CHANNEL_ID || ''; // mirror actions here
+
 const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
 
 // 🔗 Optional GIDs for row link building
@@ -50,13 +52,13 @@ const INCIDENT_GID = process.env.INCIDENT_GID || '';
 // ⚙️ App + guild config
 const clientId = '1437985374398840873';
 const guildIds = [
-  '1024627335707762688', // 🧪 test server
-  '1072289637000814632', // 🧪 second server
+  '1024627335707762688', // test server
+  '1072289637000814632', // second server
 ];
 
-// ✅ Role/Channel Guard — fill with your real IDs
-const ALLOWED_ROLES = [/* '1433388812330995843' */];
-const ALLOWED_CHANNELS = [/* '1376107879592886282' */];
+// ✅ Role/Channel Guard — fill with your real IDs (or leave empty to allow all)
+const ALLOWED_ROLES = [/* '123456789012345678' */];
+const ALLOWED_CHANNELS = [/* '123456789012345678' */];
 
 // 📄 Sheets API
 const sheets = google.sheets('v4');
@@ -91,6 +93,12 @@ const yyyymmddPH = () => {
   const da = d.toLocaleString('en-PH', { timeZone: tz, day: '2-digit' });
   return `${y}${m}${da}`;
 };
+const fmtMoney = (n) => `$${Number(String(n||0).replace(/[,]/g,'')).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+
+function parseCSVSet(text) {
+  return new Set(String(text||'').split(',').map(s=>s.trim()).filter(Boolean));
+}
+function setToCSV(set) { return Array.from(set).join(', '); }
 
 // 🔢 Compute next case number by scanning the date-prefixed entries
 async function getNextCaseSeq(type) {
@@ -114,31 +122,109 @@ async function getNextCaseSeq(type) {
   return maxSeq + 1;
 }
 
-// 🧱 Shared UI builders
-function buildMdtEmbed(draft, user) {
+// ------------- Penalties + Locations (from Sheets) -------------
+async function readPenaltiesFromSheet() {
+  const authClient = await auth.getClient();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: 'Penalties!A2:E', // CODE | OFFENSE | DESCRIPTION | JAIL | FINE
+    auth: authClient,
+  });
+  const rows = res.data.values || [];
+  return rows
+    .filter(r => (r?.[0] && r?.[1]))
+    .map(r => ({
+      code: String(r[0]).trim(),
+      offense: String(r[1]).trim(),
+      description: String(r?.[2]||'').trim(),
+      jail: Number(String(r?.[3]||'0').replace(/[,]/g,'')),
+      fine: Number(String(r?.[4]||'0').replace(/[,]/g,'')),
+    }));
+}
+function buildPenaltyIndex(list) {
+  const byName = new Map();
+  const byCode = new Map();
+  const byGroup = new Map(); // "100","200",...
+  for (const p of list) {
+    if (p.offense) byName.set(p.offense.toLowerCase(), p);
+    if (p.code) {
+      const codeKey = String(p.code).toLowerCase();
+      byCode.set(codeKey, p);
+      const group = codeKey.slice(0,1)+'00';
+      if (!byGroup.has(group)) byGroup.set(group, []);
+      byGroup.get(group).push(p);
+    }
+  }
+  return { byName, byCode, byGroup };
+}
+async function readLocationsFromSheet() {
+  try {
+    const authClient = await auth.getClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'Locations!A2:A',
+      auth: authClient,
+    });
+    return (res.data.values || []).map(r => String(r[0]).trim()).filter(Boolean);
+  } catch {
+    return []; // if Locations tab absent, we simply won't show the pick menu
+  }
+}
+function sumPenalties(index, chargeText) {
+  const result = { fine: 0, jail: 0, found: [], unknown: [] };
+  const items = [...new Set(String(chargeText||'')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  )];
+
+  for (const raw of items) {
+    const key = raw.toLowerCase();
+    const p = (/^\d+$/.test(key) ? index.byCode.get(key) : index.byName.get(key));
+    if (p) {
+      result.fine += Number(p.fine||0);
+      result.jail += Number(p.jail||0);
+      result.found.push(`${p.offense} (${fmtMoney(p.fine)} | ${p.jail}m)`);
+    } else {
+      result.unknown.push(raw);
+    }
+  }
+  return result;
+}
+
+// ---------------- UI builders ----------------
+function buildMdtEmbed(draft, user, penaltyTotals) {
   const embed = new EmbedBuilder()
     .setColor(0x00a3ff)
     .setTitle(`${draft.type === 'Arrest Log' ? '🚔 Arrest Log' : '📝 Incident Report'} — Review & Confirm`)
-    .setAuthor({
-      name: `${user.username} • ${nowPH()} (PH)`,
-      iconURL: user.displayAvatarURL({ forceStatic: false }),
-    })
+    .setAuthor({ name: `${user.username} • ${nowPH()} (PH)`, iconURL: user.displayAvatarURL({ forceStatic: false }) })
     .addFields(
       { name: '🆔 Case Number', value: `**${draft.caseNum}**`, inline: true },
       { name: '📅 Date', value: draft.date, inline: true },
       { name: '👮 Officer', value: draft.officer, inline: true },
       { name: '🧍 Suspect', value: draft.suspect, inline: true },
-      { name: '⚖️ Charge / Incident', value: draft.charge, inline: true },
-      { name: '📍 Location', value: draft.location, inline: true },
+      { name: '⚖️ Charges / Codes', value: draft.charge || '—', inline: false },
+      { name: '📍 Location', value: draft.location || '—', inline: true },
       { name: '🧾 Evidence', value: draft.evidence || '—', inline: false },
       { name: '🗒️ Summary', value: draft.summary || 'No summary provided', inline: false },
     )
     .setFooter({ text: '✅ Confirm to log to Google Sheets • ✏️ Edit to fix • ❌ Cancel to discard' })
     .setTimestamp();
 
-  if (draft.evidenceImage?.url) {
-    embed.setImage(draft.evidenceImage.url);
+  if (penaltyTotals) {
+    embed.addFields(
+      { name: '💸 Total Fine', value: fmtMoney(penaltyTotals.fine), inline: true },
+      { name: '⏱️ Jail Time', value: `${penaltyTotals.jail} min`, inline: true },
+    );
+    if (penaltyTotals.found.length) {
+      embed.addFields({ name: '🧮 Breakdown', value: penaltyTotals.found.join(', ').slice(0, 1024) });
+    }
+    if (penaltyTotals.unknown.length) {
+      embed.addFields({ name: '⚠️ Unknown charges', value: penaltyTotals.unknown.join(', ').slice(0, 1024) });
+    }
   }
+
+  if (draft.evidenceImage?.url) embed.setImage(draft.evidenceImage.url);
   return embed;
 }
 
@@ -146,8 +232,53 @@ function buildMdtButtons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('confirm_mdt').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId('edit_mdt').setLabel('Edit').setEmoji('✏️').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('pick_charges').setLabel('Pick Charges').setEmoji('🧾').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('pick_location').setLabel('Pick Location').setEmoji('📍').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('cancel_mdt').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Danger),
   );
+}
+
+function buildChargeMenus(pIndex) {
+  const rows = [];
+  const groups = ['100','200','300','400','500','600'];
+  for (const g of groups) {
+    const items = (pIndex.byGroup.get(g) || []).map(p => ({
+      label: `${p.code} • ${p.offense}`.slice(0, 100),
+      value: p.offense, // we store name; totals accept name or code anyway
+      description: (p.description || '').slice(0, 100),
+    }));
+    if (!items.length) continue;
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`sel_charge_${g}`)
+      .setPlaceholder(`${g}s • Select charges`)
+      .setMinValues(0)
+      .setMaxValues(Math.min(items.length, 25))
+      .addOptions(items);
+    rows.push(new ActionRowBuilder().addComponents(menu));
+  }
+  return rows;
+}
+
+function buildLocationMenu(locations) {
+  const opts = locations.slice(0,25).map(l => ({ label: l, value: l }));
+  if (!opts.length) return [];
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('sel_location')
+    .setPlaceholder('Select location')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(opts);
+  return [new ActionRowBuilder().addComponents(menu)];
+}
+
+async function logAudit(guild, content, embed) {
+  if (!AUDIT_CHANNEL_ID) return;
+  try {
+    const ch = guild.channels.cache.get(AUDIT_CHANNEL_ID) || await guild.channels.fetch(AUDIT_CHANNEL_ID);
+    if (ch) await ch.send({ content, embeds: embed ? [embed] : [] });
+  } catch (e) {
+    console.error('⚠️ Audit log send failed:', e.message);
+  }
 }
 
 // ------------------ 🚀 BOT READY EVENT ------------------
@@ -175,7 +306,7 @@ client.once('ready', async () => {
       )
       .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
       .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name').setRequired(true))
-      .addStringOption((opt) => opt.setName('charge').setDescription('Charge or incident').setRequired(true))
+      .addStringOption((opt) => opt.setName('charge').setDescription('Charge(s) or code(s), comma-separated').setRequired(true))
       .addStringOption((opt) => opt.setName('location').setDescription('Location').setRequired(true))
       .addStringOption((opt) => opt.setName('evidence').setDescription('Evidence details').setRequired(true))
       .addStringOption((opt) => opt.setName('summary').setDescription('Summary or note').setRequired(false))
@@ -216,7 +347,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (commandName === 'mdt') {
-        // 1) Public/Private toggle
+        // Public/Private toggle
         const makePrivate = interaction.options.getBoolean('private') ?? false;
         if (makePrivate) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         else await interaction.deferReply();
@@ -230,7 +361,7 @@ client.on('interactionCreate', async (interaction) => {
         const summary = interaction.options.getString('summary');
         const evidenceImage = interaction.options.getAttachment('evidenceimage');
 
-        // Persistent sequence
+        // Case number
         const day = yyyymmddPH();
         const prefix = type === 'Arrest Log' ? 'AL' : 'IR';
         const nextSeq = await getNextCaseSeq(type);
@@ -253,32 +384,32 @@ client.on('interactionCreate', async (interaction) => {
           messageId: null,
           threadId: null,
         };
-
-        // Save session
         sessions.set(sessionKey(interaction), draft);
 
-        const embed = buildMdtEmbed(draft, interaction.user);
+        // Penalties
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        const totals = sumPenalties(pIndex, draft.charge);
+
+        const embed = buildMdtEmbed(draft, interaction.user, totals);
         const buttons = buildMdtButtons();
 
-        // 2) Auto-thread per case — move preview to thread
-        const thread = await interaction.channel.threads.create({
-          name: draft.caseNum,
-          autoArchiveDuration: 1440, // 24h
-        });
+        // Thread
+        const thread = await interaction.channel.threads.create({ name: draft.caseNum, autoArchiveDuration: 1440 });
         draft.threadId = thread.id;
         sessions.set(sessionKey(interaction), draft);
 
-        // Replace the original reply with a "moved to thread" message
-        await interaction.editReply({ content: `🧵 Moved preview to thread: <#${thread.id}>`, embeds: [], components: [] });
+        await interaction.editReply({ content: `🧵 Moved preview to thread: <#${thread.id}>` });
 
-        // Send the actual preview inside the thread
         const msg = await thread.send({ embeds: [embed], components: [buttons] });
         draft.messageId = msg.id;
         sessions.set(sessionKey(interaction), draft);
+
+        // Audit
+        await logAudit(interaction.guild, `🟡 Draft started: **${draft.caseNum}** by <@${draft.userId}>`, embed);
       }
 
       if (commandName === 'officerstats') {
-        // PUBLIC
         await interaction.deferReply();
 
         const officerName = interaction.options.getString('officer');
@@ -318,23 +449,33 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ---------- 🔘 BUTTON INTERACTIONS ----------
+    // ---------- 🔘 BUTTONS ----------
     else if (interaction.isButton()) {
       const key = sessionKey(interaction);
       const draft = sessions.get(key);
+      if (!draft) return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
+      if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
 
-      // Require a draft
-      if (!draft) {
-        return interaction.reply({ content: '⚠️ No active MDT draft found for you. Start with **/mdt**.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId === 'pick_charges') {
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        draft.penaltyIndex = pIndex;
+        sessions.set(key, draft);
+
+        const rows = buildChargeMenus(pIndex);
+        if (!rows.length) return interaction.reply({ content: '⚠️ No penalties configured.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: '🧾 Pick charges by group (you can open each menu):', components: rows, flags: MessageFlags.Ephemeral });
       }
 
-      // Only the creator can act on their draft
-      if (interaction.user.id !== draft.userId) {
-        return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId === 'pick_location') {
+        const locs = await readLocationsFromSheet();
+        const rows = buildLocationMenu(locs);
+        if (!rows.length) return interaction.reply({ content: '⚠️ No `Locations` tab or it is empty.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: '📍 Pick a location:', components: rows, flags: MessageFlags.Ephemeral });
       }
 
       if (interaction.customId === 'confirm_mdt') {
-        // Recompute next sequence
+        // Recompute next sequence to avoid race conditions
         const nextSeq = await getNextCaseSeq(draft.type);
         const day = yyyymmddPH();
         const prefix = draft.type === 'Arrest Log' ? 'AL' : 'IR';
@@ -352,7 +493,6 @@ client.on('interactionCreate', async (interaction) => {
           draft.summary || 'No summary provided',
           draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
         ];
-
         const range = draft.type === 'Arrest Log' ? 'Arrest Log!A1' : 'Incident Report!A1';
 
         try {
@@ -365,43 +505,32 @@ client.on('interactionCreate', async (interaction) => {
             auth: authClient,
           });
 
-          // 3) Build a direct row link if possible
           let rowLink = '';
           try {
             const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
             const rowNumMatch = updatedRange.match(/!.*?(\d+):/);
             const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
             const gid = draft.type === 'Arrest Log' ? ARREST_GID : INCIDENT_GID;
-            if (rowNum && gid) {
-              rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}&range=A${rowNum}:I${rowNum}`;
-            }
+            if (rowNum && gid) rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}&range=A${rowNum}:I${rowNum}`;
           } catch {}
 
-          // Clear session
           sessions.delete(key);
 
-          await interaction.update({
-            content: `✅ **${draft.caseNum}** logged to Google Sheets! ${rowLink ? `[[Open row]](${rowLink})` : ''}`,
-            components: [],
-            embeds: [],
-          });
+          await interaction.update({ content: `✅ **${draft.caseNum}** logged to Google Sheets! ${rowLink ? `[[Open row]](${rowLink})` : ''}`, components: [], embeds: [] });
+
+          // Audit
+          await logAudit(interaction.guild, `🟢 Confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, null);
         } catch (err) {
           console.error('🚨 Error logging MDT report:', err);
-          await interaction.update({
-            content: '❌ Error logging MDT report. Please check your Google credentials & spreadsheet ID.',
-            components: [],
-            embeds: [],
-          });
+          await interaction.update({ content: '❌ Error logging MDT report. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
+          await logAudit(interaction.guild, `🔴 Confirm failed for **${draft.caseNum}** (${err.message})`, null);
         }
       }
 
       if (interaction.customId === 'cancel_mdt') {
         sessions.delete(key);
-        await interaction.update({
-          content: '❌ **MDT Report entry canceled.**',
-          components: [],
-          embeds: [],
-        });
+        await interaction.update({ content: '❌ **MDT Report entry canceled.**', components: [], embeds: [] });
+        await logAudit(interaction.guild, `🟠 Canceled draft for **${draft.caseNum}** by <@${interaction.user.id}>`, null);
       }
 
       if (interaction.customId === 'edit_mdt') {
@@ -411,23 +540,14 @@ client.on('interactionCreate', async (interaction) => {
         const modal = new ModalBuilder().setCustomId('mdt_modal').setTitle('✏️ Edit MDT Draft');
 
         const mkShort = (id, label, value, required = true) =>
-          new TextInputBuilder()
-            .setCustomId(id).setLabel(label)
-            .setStyle(TextInputStyle.Short)
-            .setRequired(required)
-            .setValue((value || '').slice(0, 100));
-
+          new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required).setValue((value || '').slice(0, 100));
         const mkLong = (id, label, value, required = false) =>
-          new TextInputBuilder()
-            .setCustomId(id).setLabel(label)
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(required)
-            .setValue((value || '').slice(0, 1024));
+          new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Paragraph).setRequired(required).setValue((value || '').slice(0, 1024));
 
         modal.addComponents(
           new ActionRowBuilder().addComponents(mkShort('officer', 'Officer', draft.officer)),
           new ActionRowBuilder().addComponents(mkShort('suspect', 'Suspect', draft.suspect)),
-          new ActionRowBuilder().addComponents(mkShort('charge', 'Charge / Incident', draft.charge)),
+          new ActionRowBuilder().addComponents(mkShort('charge', 'Charge / Codes (comma-separated)', draft.charge)),
           new ActionRowBuilder().addComponents(mkShort('location', 'Location', draft.location)),
           new ActionRowBuilder().addComponents(mkLong('summary', 'Summary (optional)', draft.summary, false)),
         );
@@ -436,39 +556,82 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // ---------- 🧾 SELECT MENUS ----------
+    else if (interaction.isStringSelectMenu()) {
+      const key = sessionKey(interaction);
+      const draft = sessions.get(key);
+      if (!draft) return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
+      if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
+
+      if (interaction.customId.startsWith('sel_charge_')) {
+        // Merge selected offenses into draft.charge
+        const current = parseCSVSet(draft.charge);
+        for (const v of interaction.values) current.add(v);
+        draft.charge = setToCSV(current);
+        sessions.set(key, draft);
+
+        // Update preview with recalculated totals
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        const totals = sumPenalties(pIndex, draft.charge);
+        const embed = buildMdtEmbed(draft, interaction.user, totals);
+        const buttons = buildMdtButtons();
+        try {
+          if (draft.messageId && interaction.channel) {
+            await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
+          }
+        } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
+
+        return interaction.update({ content: `🧾 Added ${interaction.values.length} charge(s). Current: ${draft.charge}`, components: [], flags: MessageFlags.Ephemeral });
+      }
+
+      if (interaction.customId === 'sel_location') {
+        draft.location = interaction.values[0];
+        sessions.set(key, draft);
+
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        const totals = sumPenalties(pIndex, draft.charge);
+        const embed = buildMdtEmbed(draft, interaction.user, totals);
+        const buttons = buildMdtButtons();
+        try {
+          if (draft.messageId && interaction.channel) {
+            await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
+          }
+        } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
+
+        return interaction.update({ content: `📍 Location set to **${draft.location}**.`, components: [], flags: MessageFlags.Ephemeral });
+      }
+    }
+
     // ---------- 📝 MODAL SUBMISSIONS ----------
     else if (interaction.isModalSubmit()) {
       if (interaction.customId === 'mdt_modal') {
         const key = sessionKey(interaction);
         const draft = sessions.get(key);
+        if (!draft) return interaction.reply({ content: '⚠️ Draft not found. Please run **/mdt** again.', flags: MessageFlags.Ephemeral });
+        if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
 
-        if (!draft) {
-          return interaction.reply({ content: '⚠️ Draft not found. Please run **/mdt** again.', flags: MessageFlags.Ephemeral });
-        }
-        if (interaction.user.id !== draft.userId) {
-          return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
-        }
-
-        // Update draft from modal fields
         draft.officer = interaction.fields.getTextInputValue('officer').trim();
         draft.suspect = interaction.fields.getTextInputValue('suspect').trim();
         draft.charge = interaction.fields.getTextInputValue('charge').trim();
         draft.location = interaction.fields.getTextInputValue('location').trim();
         draft.summary = interaction.fields.getTextInputValue('summary').trim();
-
         sessions.set(key, draft);
 
-        // Update the original preview message (we're in the thread already)
+        // Recalc totals & update the thread preview
+        const penalties = await readPenaltiesFromSheet();
+        const pIndex = buildPenaltyIndex(penalties);
+        const totals = sumPenalties(pIndex, draft.charge);
+        const embed = buildMdtEmbed(draft, interaction.user, totals);
+        const buttons = buildMdtButtons();
         try {
-          const embed = buildMdtEmbed(draft, interaction.user);
-          const buttons = buildMdtButtons();
           if (draft.messageId && interaction.channel) {
             await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
           }
-        } catch (e) {
-          console.error('⚠️ Failed to edit preview message:', e);
-        }
+        } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
 
+        await logAudit(interaction.guild, `✏️ Edited draft **${draft.caseNum}** by <@${interaction.user.id}>`, embed);
         return interaction.reply({ content: '✅ Draft updated.', flags: MessageFlags.Ephemeral });
       }
     }
