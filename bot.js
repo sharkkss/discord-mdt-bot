@@ -444,6 +444,11 @@ client.once('ready', async () => {
       .setDescription('📊 View officer stats')
       .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
       .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('📚 Show MDT bot help and command guide')
+      .toJSON(),
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -625,6 +630,71 @@ client.on('interactionCreate', async (interaction) => {
           console.error('🚨 Error fetching officer stats:', err);
           await interaction.editReply('❌ Error fetching officer stats. Please try again later.');
         }
+      }
+
+      if (commandName === 'help') {
+        const helpEmbed = new EmbedBuilder()
+          .setColor(0x9b59b6)
+          .setTitle('📚 MDT Bot - Command Guide')
+          .setDescription('Welcome to the MDT (Mobile Data Terminal) Bot! Here are all available commands:')
+          .addFields(
+            {
+              name: '🚓 /arrest',
+              value: '**Create an arrest log entry**\n' +
+                     '• Records arrests with charges, penalties, and evidence\n' +
+                     '• Auto-calculates fines and jail time from penalty codes\n' +
+                     '• Required: officer, suspect, charge, location, evidence\n' +
+                     '• Optional: summary, evidence image, private mode',
+              inline: false
+            },
+            {
+              name: '📝 /incident',
+              value: '**Create an incident report**\n' +
+                     '• Documents incidents with event types and involved parties\n' +
+                     '• Tracks victims, suspects, and witnesses\n' +
+                     '• Required: officer, location, summary\n' +
+                     '• Optional: event type, victim, suspect, witness, evidence image, private mode',
+              inline: false
+            },
+            {
+              name: '📊 /officerstats',
+              value: '**View officer statistics**\n' +
+                     '• Shows total arrests and incident reports\n' +
+                     '• Displays combined case count\n' +
+                     '• Required: officer name',
+              inline: false
+            },
+            {
+              name: '🎯 Interactive Features',
+              value: '• **Pick Charges** - Browse penalty codes by category (100s, 200s, etc.)\n' +
+                     '• **Pick Location** - Select from predefined locations\n' +
+                     '• **Event Type Picker** - Choose from 12+ incident types\n' +
+                     '• **Edit Button** - Modify draft before submitting\n' +
+                     '• **Preview & Confirm** - Review all details before logging',
+              inline: false
+            },
+            {
+              name: '📋 How It Works',
+              value: '1️⃣ Use `/arrest` or `/incident` to start a report\n' +
+                     '2️⃣ Bot creates a thread and shows a preview\n' +
+                     '3️⃣ Use buttons to pick charges, locations, or edit details\n' +
+                     '4️⃣ Click **Confirm** to save to Google Sheets\n' +
+                     '5️⃣ Get a direct link to the logged row',
+              inline: false
+            },
+            {
+              name: '💡 Tips',
+              value: '• Use `private: True` to make the initial preview ephemeral\n' +
+                     '• Charges can be entered as codes (e.g., "101, 205") or names\n' +
+                     '• The bot auto-generates case numbers: AL-YYYYMMDD-#### or IR-YYYYMMDD-####\n' +
+                     '• All timestamps use Philippine Time (Asia/Manila)',
+              inline: false
+            }
+          )
+          .setFooter({ text: `Bot Version 2.0 • ${nowPH()} (PH)` })
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [helpEmbed], flags: MessageFlags.Ephemeral });
       }
     }
 
