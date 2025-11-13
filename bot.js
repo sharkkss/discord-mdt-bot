@@ -553,57 +553,103 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (interaction.customId === 'confirm_mdt') {
-        // Recompute next sequence to avoid race conditions
-        const nextSeq = await getNextCaseSeq(draft.type);
-        const day = yyyymmddPH();
-        const prefix = draft.type === 'Arrest Log' ? 'AL' : 'IR';
-        draft.seq = nextSeq;
-        draft.caseNum = `${prefix}-${day}-${nextSeq}`;
+  // Ensure we still have the draft
+  const key = sessionKey(interaction);
+  const draft = sessions.get(key);
+  if (!draft) {
+    return interaction.reply({ content: '⚠️ Draft expired. Use **/mdt** again.', flags: MessageFlags.Ephemeral });
+  }
 
-        const caseDataArray = [
-          draft.caseNum,
-          draft.date,
-          draft.officer,
-          draft.suspect,
-          draft.charge,
-          draft.location,
-          draft.evidence,
-          draft.summary || 'No summary provided',
-          draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
-        ];
-        const range = draft.type === 'Arrest Log' ? 'Arrest Log!A1' : 'Incident Report!A1';
+  // Recompute next sequence to avoid race conditions & set caseNum
+  const nextSeq = await getNextCaseSeq(draft.type);
+  const day = yyyymmddPH();
+  const prefix = draft.type === 'Arrest Log' ? 'AL' : 'IR';
+  draft.seq = nextSeq;
+  draft.caseNum = `${prefix}-${day}-${nextSeq}`;
 
-        try {
-          const authClient = await auth.getClient();
-          const resp = await sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range,
-            valueInputOption: 'RAW',
-            resource: { values: [caseDataArray] },
-            auth: authClient,
-          });
+  const row = [
+    draft.caseNum,
+    draft.date,
+    draft.officer,
+    draft.suspect,
+    draft.charge,
+    draft.location,
+    draft.evidence,
+    draft.summary || 'No summary provided',
+    draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
+  ];
+  const range = draft.type === 'Arrest Log' ? 'Arrest Log!A1' : 'Incident Report!A1';
 
-          let rowLink = '';
-          try {
-            const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
-            const rowNumMatch = updatedRange.match(/!.*?(\d+):/);
-            const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
-            const gid = draft.type === 'Arrest Log' ? ARREST_GID : INCIDENT_GID;
-            if (rowNum && gid) rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}&range=A${rowNum}:I${rowNum}`;
-          } catch {}
+  try {
+    // 1) Append to Google Sheets
+    const authClient = await auth.getClient();
+    const resp = await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      resource: { values: [row] },
+      auth: authClient,
+    });
 
-          sessions.delete(key);
-
-          await interaction.update({ content: `✅ **${draft.caseNum}** logged to Google Sheets! ${rowLink ? `[[Open row]](${rowLink})` : ''}`, components: [], embeds: [] });
-
-          // Audit
-          await logAudit(interaction.guild, `🟢 Confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, null);
-        } catch (err) {
-          console.error('🚨 Error logging MDT report:', err);
-          await interaction.update({ content: '❌ Error logging MDT report. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
-          await logAudit(interaction.guild, `🔴 Confirm failed for **${draft.caseNum}** (${err.message})`, null);
-        }
+    // 2) Try to build a direct row link
+    let rowLink = '';
+    try {
+      const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
+      const rowNumMatch = updatedRange.match(/!.*?(\\d+):/);
+      const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
+      const gid = draft.type === 'Arrest Log' ? ARREST_GID : INCIDENT_GID;
+      if (rowNum && gid) {
+        rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}&range=A${rowNum}:I${rowNum}`;
       }
+    } catch {}
+
+    // 3) Recompute penalties and totals for final embed
+    const penalties = await readPenaltiesFromSheet();
+    const pIndex = buildPenaltyIndex(penalties);
+    const totals = sumPenalties(pIndex, draft.charge);
+
+    // 4) Build FINAL, PUBLIC embed with all details
+    const finalEmbed = new EmbedBuilder()
+      .setColor(0x2ecc71)
+      .setTitle(`✅ ${draft.caseNum} — ${draft.type}`)
+      .addFields(
+        { name: '👮 Officer', value: draft.officer || '—', inline: true },
+        { name: '🧍 Suspect', value: draft.suspect || '—', inline: true },
+        { name: '📅 Date', value: draft.date || '—', inline: true },
+        { name: '📍 Location', value: draft.location || '—', inline: true },
+        { name: '⚖️ Charges', value: draft.charge || '—', inline: false },
+        { name: '💸 Total Fine', value: fmtMoney(totals.fine), inline: true },
+        { name: '⏱️ Jail Time', value: `${totals.jail} min`, inline: true },
+      )
+      .setFooter({ text: 'Logged to Google Sheets' })
+      .setTimestamp();
+    if (totals.found.length) {
+      finalEmbed.addFields({ name: '🧮 Breakdown', value: totals.found.join('\\n').slice(0, 1024) });
+    }
+    if (draft.summary) finalEmbed.addFields({ name: '🗒️ Summary', value: String(draft.summary).slice(0, 1024) });
+    if (draft.evidence) finalEmbed.addFields({ name: '🧾 Evidence', value: String(draft.evidence).slice(0, 1024) });
+    if (draft.evidenceImage?.url) finalEmbed.setImage(draft.evidenceImage.url);
+    if (rowLink) finalEmbed.setURL(rowLink);
+
+    // 5) Replace the preview message with the final embed so everyone sees it
+    await interaction.update({ embeds: [finalEmbed], components: [] });
+
+    // 6) Also send a plain "Open row" message
+    if (rowLink) {
+      await interaction.followUp({ content: `🔗 **Open row:** ${rowLink}` });
+    }
+
+    // 7) Audit & cleanup
+    await logAudit(interaction.guild, `🟢 Confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, finalEmbed);
+    sessions.delete(key);
+  } catch (err) {
+    console.error('🚨 Error logging MDT report:', err);
+    try {
+      await interaction.update({ content: '❌ Error logging MDT report. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
+    } catch {}
+    await logAudit(interaction.guild, `🔴 Confirm failed for **${draft.caseNum}** (${err.message})`, null);
+  }
+}
 
       if (interaction.customId === 'cancel_mdt') {
         sessions.delete(key);
