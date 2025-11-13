@@ -1,8 +1,9 @@
-// ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
-// 🚓 MDT BOT — Round 2 (safe defer patch)
-//  • Adds safeDefer() to handle 10062 Unknown interaction gracefully
-//  • Keeps pagination fix, penalties totals, location picker, audit log
-// ￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣￣
+// ═══════════════════════════════════════════
+// 🚓 MDT BOT — Separate Commands (Arrest & Incident)
+//  • /arrest - For arrest logs with charges & penalties
+//  • /incident - For incident reports with event types & witnesses
+//  • Enhanced with event type picker and role-based fields
+// ═══════════════════════════════════════════
 
 const express = require('express');
 const app = express();
@@ -30,7 +31,7 @@ const {
 } = require('discord.js');
 const { google } = require('googleapis');
 
-// Global error handlers (avoid process crash on transient API errors)
+// Global error handlers
 process.on('unhandledRejection', (e) => console.error('🔴 UnhandledRejection:', e));
 process.on('uncaughtException', (e) => console.error('🔴 UncaughtException:', e));
 
@@ -43,7 +44,7 @@ if (!process.env.GOOGLE_SHEETS_CREDENTIALS) {
   process.exit(1);
 }
 
-const AUDIT_CHANNEL_ID = process.env.AUDIT_CHANNEL_ID || ''; // mirror actions here
+const AUDIT_CHANNEL_ID = process.env.AUDIT_CHANNEL_ID || '';
 
 const googleCredentials = JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS);
 
@@ -58,7 +59,7 @@ const guildIds = [
   '1072289637000814632', // second server
 ];
 
-// ✅ Role/Channel Guard — fill with your real IDs (or leave empty to allow all)
+// ✅ Role/Channel Guard
 const ALLOWED_ROLES = [/* '123456789012345678' */];
 const ALLOWED_CHANNELS = [/* '123456789012345678' */];
 
@@ -70,7 +71,7 @@ const auth = new google.auth.GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// 🤝 Discord client
+// 🤖 Discord client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -81,7 +82,7 @@ const client = new Client({
 });
 client.on('error', (e) => console.error('🔴 Client error:', e));
 
-// 🗂️ Per-user session drafts (guild-scoped)
+// 🗂️ Per-user session drafts
 const sessions = new Map(); // key: `${userId}:${guildId}` -> { draft }
 const sessionKey = (interaction) => `${interaction.user?.id || 'user'}:${interaction.guildId || 'DM'}`;
 
@@ -89,6 +90,7 @@ const sessionKey = (interaction) => `${interaction.user?.id || 'user'}:${interac
 const tz = 'Asia/Manila';
 const nowPH = () => new Date().toLocaleString('en-PH', { timeZone: tz });
 const datePH = () => new Date().toLocaleDateString('en-PH', { timeZone: tz });
+const dateTimePH = () => new Date().toLocaleString('en-PH', { timeZone: tz, dateStyle: 'short', timeStyle: 'short' });
 const yyyymmddPH = () => {
   const d = new Date();
   const y = d.toLocaleString('en-PH', { timeZone: tz, year: 'numeric' });
@@ -103,8 +105,7 @@ function parseCSVSet(text) {
 }
 function setToCSV(set) { return Array.from(set).join(', '); }
 
-// 🔐 Safely acknowledge an interaction within 3s.
-// Returns true if acknowledged, false if token was already invalid (10062).
+// 🛡️ Safely acknowledge interaction
 async function safeDefer(interaction, ephemeral) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -114,14 +115,14 @@ async function safeDefer(interaction, ephemeral) {
     return true;
   } catch (e) {
     if (e?.code === 10062) {
-      console.warn('⚠️ Interaction token expired before defer (cold start or slow host). Skipping.');
+      console.warn('⚠️ Interaction token expired before defer. Skipping.');
       return false;
     }
     throw e;
   }
 }
 
-// 🔢 Compute next case number by scanning the date-prefixed entries
+// 🔢 Compute next case number
 async function getNextCaseSeq(type) {
   const authClient = await auth.getClient();
   const prefix = type === 'Arrest Log' ? 'AL' : 'IR';
@@ -139,7 +140,7 @@ async function getNextCaseSeq(type) {
     })
     .filter(Number.isFinite);
 
-  const maxSeq = seqs.length ? Math.max(...seqs) : 999; // start from 1000 if none
+  const maxSeq = seqs.length ? Math.max(...seqs) : 999;
   return maxSeq + 1;
 }
 
@@ -148,7 +149,7 @@ async function readPenaltiesFromSheet() {
   const authClient = await auth.getClient();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: 'Penalties!A2:E', // CODE | OFFENSE | DESCRIPTION | JAIL | FINE
+    range: 'Penalties!A2:E',
     auth: authClient,
   });
   const rows = res.data.values || [];
@@ -162,10 +163,11 @@ async function readPenaltiesFromSheet() {
       fine: Number(String(r?.[4]||'0').replace(/[,]/g,'')),
     }));
 }
+
 function buildPenaltyIndex(list) {
   const byName = new Map();
   const byCode = new Map();
-  const byGroup = new Map(); // "100","200",...
+  const byGroup = new Map();
   for (const p of list) {
     if (p.offense) byName.set(p.offense.toLowerCase(), p);
     if (p.code) {
@@ -178,6 +180,7 @@ function buildPenaltyIndex(list) {
   }
   return { byName, byCode, byGroup };
 }
+
 async function readLocationsFromSheet() {
   try {
     const authClient = await auth.getClient();
@@ -188,9 +191,26 @@ async function readLocationsFromSheet() {
     });
     return (res.data.values || []).map(r => String(r[0]).trim()).filter(Boolean);
   } catch {
-    return []; // if Locations tab absent, we simply won't show the pick menu
+    return [];
   }
 }
+
+// 📋 Event types for incidents
+const EVENT_TYPES = [
+  '🚗 Traffic Accident',
+  '🔫 Assault',
+  '🏠 Burglary',
+  '🔥 Arson',
+  '💊 Drug Activity',
+  '👥 Disturbance',
+  '🚨 Emergency Call',
+  '🏪 Robbery',
+  '🚶 Missing Person',
+  '⚠️ Suspicious Activity',
+  '📞 Welfare Check',
+  '🎯 Other',
+];
+
 function sumPenalties(index, chargeText) {
   const result = { fine: 0, jail: 0, found: [], unknown: [] };
   const items = [...new Set(String(chargeText||'')
@@ -214,22 +234,22 @@ function sumPenalties(index, chargeText) {
 }
 
 // ---------------- UI builders ----------------
-function buildMdtEmbed(draft, user, penaltyTotals) {
+function buildArrestEmbed(draft, user, penaltyTotals) {
   const embed = new EmbedBuilder()
-    .setColor(0x00a3ff)
-    .setTitle(`${draft.type === 'Arrest Log' ? '🚔 Arrest Log' : '📝 Incident Report'} — Review & Confirm`)
+    .setColor(0xff4444)
+    .setTitle(`🚓 Arrest Log — Review & Confirm`)
     .setAuthor({ name: `${user.username} • ${nowPH()} (PH)`, iconURL: user.displayAvatarURL({ forceStatic: false }) })
     .addFields(
       { name: '🆔 Case Number', value: `**${draft.caseNum}**`, inline: true },
       { name: '📅 Date', value: draft.date, inline: true },
       { name: '👮 Officer', value: draft.officer, inline: true },
-      { name: '🧍 Suspect', value: draft.suspect, inline: true },
+      { name: '🧑 Suspect', value: draft.suspect, inline: true },
       { name: '⚖️ Charges / Codes', value: draft.charge || '—', inline: false },
       { name: '📍 Location', value: draft.location || '—', inline: true },
       { name: '🧾 Evidence', value: draft.evidence || '—', inline: false },
       { name: '🗒️ Summary', value: draft.summary || 'No summary provided', inline: false },
     )
-    .setFooter({ text: '✅ Confirm to log to Google Sheets • ✏️ Edit to fix • ❌ Cancel to discard' })
+    .setFooter({ text: '✅ Confirm to log • ✏️ Edit to fix • ❌ Cancel to discard' })
     .setTimestamp();
 
   if (penaltyTotals) {
@@ -249,19 +269,59 @@ function buildMdtEmbed(draft, user, penaltyTotals) {
   return embed;
 }
 
-function buildMdtButtons() {
+function buildIncidentEmbed(draft, user) {
+  const embed = new EmbedBuilder()
+    .setColor(0x3498db)
+    .setTitle(`📝 Incident Report — Review & Confirm`)
+    .setAuthor({ name: `${user.username} • ${nowPH()} (PH)`, iconURL: user.displayAvatarURL({ forceStatic: false }) })
+    .addFields(
+      { name: '🆔 Case Number', value: `**${draft.caseNum}**`, inline: true },
+      { name: '📅 Date & Time', value: draft.dateTime, inline: true },
+      { name: '👮 Officer', value: draft.officer, inline: true },
+      { name: '📍 Location', value: draft.location || '—', inline: true },
+      { name: '🎯 Event Type', value: draft.eventType || '—', inline: true },
+      { name: '🗒️ Summary', value: draft.summary || 'No summary provided', inline: false },
+    )
+    .setFooter({ text: '✅ Confirm to log • ✏️ Edit to fix • ❌ Cancel to discard' })
+    .setTimestamp();
+
+  // People involved section
+  const people = [];
+  if (draft.victim) people.push(`**Victim:** ${draft.victim}`);
+  if (draft.suspect) people.push(`**Suspect:** ${draft.suspect}`);
+  if (draft.witness) people.push(`**Witness:** ${draft.witness}`);
+  
+  if (people.length) {
+    embed.addFields({ name: '👥 People Involved', value: people.join('\n'), inline: false });
+  }
+
+  if (draft.evidenceImage?.url) embed.setImage(draft.evidenceImage.url);
+  return embed;
+}
+
+function buildArrestButtons() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('confirm_mdt').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('edit_mdt').setLabel('Edit').setEmoji('✏️').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('confirm_arrest').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('edit_arrest').setLabel('Edit').setEmoji('✏️').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('pick_charges').setLabel('Pick Charges').setEmoji('🧾').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('pick_location').setLabel('Pick Location').setEmoji('📍').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('cancel_mdt').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Danger),
   );
 }
 
-// Build up to 4 select menus per page, plus a nav row (Prev/Next/Close)
+function buildIncidentButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('confirm_incident').setLabel('Confirm').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('edit_incident').setLabel('Edit').setEmoji('✏️').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('pick_event_type').setLabel('Event Type').setEmoji('🎯').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('pick_location').setLabel('Pick Location').setEmoji('📍').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('cancel_mdt').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Danger),
+  );
+}
+
+// Build charge picker menus with pagination
 function buildChargeMenus(pIndex, page = 0) {
-  const groupsAll = Array.from(pIndex.byGroup.keys()).sort(); // ['100','200',...]
+  const groupsAll = Array.from(pIndex.byGroup.keys()).sort();
   const pageSize = 4;
   const totalPages = Math.max(1, Math.ceil(groupsAll.length / pageSize));
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
@@ -273,7 +333,7 @@ function buildChargeMenus(pIndex, page = 0) {
   for (const g of sliceGroups) {
     const items = (pIndex.byGroup.get(g) || []).map(p => ({
       label: `${p.code} • ${p.offense}`.slice(0, 100),
-      value: p.offense, // store name; totals accept name or code
+      value: p.offense,
       description: (p.description || '').slice(0, 100),
     }));
     if (!items.length) continue;
@@ -288,7 +348,6 @@ function buildChargeMenus(pIndex, page = 0) {
     rows.push(new ActionRowBuilder().addComponents(menu));
   }
 
-  // Nav row (keeps total rows ≤ 5)
   const nav = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`charges_prev_${safePage}`)
@@ -318,6 +377,17 @@ function buildLocationMenu(locations) {
   return [new ActionRowBuilder().addComponents(menu)];
 }
 
+function buildEventTypeMenu() {
+  const opts = EVENT_TYPES.map(e => ({ label: e, value: e }));
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('sel_event_type')
+    .setPlaceholder('Select event type')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(opts);
+  return [new ActionRowBuilder().addComponents(menu)];
+}
+
 async function logAudit(guild, content, embed) {
   if (!AUDIT_CHANNEL_ID) return;
   try {
@@ -330,33 +400,36 @@ async function logAudit(guild, content, embed) {
 
 // ------------------ 🚀 BOT READY EVENT ------------------
 client.once('ready', async () => {
-  console.log(`✅ Bot online as ${client.user.tag} | 🕒 ${nowPH()} (PH)`);
+  console.log(`✅ Bot online as ${client.user.tag} | 🕐 ${nowPH()} (PH)`);
   client.user.setPresence({
-    activities: [{ name: '🚓 MDT on duty | /mdt', type: 0 }],
+    activities: [{ name: '🚓 MDT on duty | /arrest /incident', type: 0 }],
     status: 'online',
   });
 
-  // 🛠️ Slash commands (added boolean option `private`)
+  // 🛠️ Slash commands
   const commands = [
     new SlashCommandBuilder()
-      .setName('mdt')
-      .setDescription('🚓 Start the MDT process')
-      .addStringOption((opt) =>
-        opt
-          .setName('type')
-          .setDescription('Type of report')
-          .setRequired(true)
-          .addChoices(
-            { name: 'Arrest Log', value: 'Arrest Log' },
-            { name: 'Incident Report', value: 'Incident Report' },
-          ),
-      )
+      .setName('arrest')
+      .setDescription('🚓 Create an arrest log entry')
       .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
       .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name').setRequired(true))
       .addStringOption((opt) => opt.setName('charge').setDescription('Charge(s) or code(s), comma-separated').setRequired(true))
       .addStringOption((opt) => opt.setName('location').setDescription('Location').setRequired(true))
       .addStringOption((opt) => opt.setName('evidence').setDescription('Evidence details').setRequired(true))
       .addStringOption((opt) => opt.setName('summary').setDescription('Summary or note').setRequired(false))
+      .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
+      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?')),
+
+    new SlashCommandBuilder()
+      .setName('incident')
+      .setDescription('📝 Create an incident report')
+      .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
+      .addStringOption((opt) => opt.setName('location').setDescription('Location').setRequired(true))
+      .addStringOption((opt) => opt.setName('eventtype').setDescription('Type of event (or use picker)').setRequired(false))
+      .addStringOption((opt) => opt.setName('summary').setDescription('Short summary of what happened').setRequired(true))
+      .addStringOption((opt) => opt.setName('victim').setDescription('Victim name(s)').setRequired(false))
+      .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name(s)').setRequired(false))
+      .addStringOption((opt) => opt.setName('witness').setDescription('Witness name(s)').setRequired(false))
       .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
       .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?')),
 
@@ -384,7 +457,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
 
-      // Role/Channel guard (commands only)
+      // Role/Channel guard
       if (ALLOWED_CHANNELS.length && !ALLOWED_CHANNELS.includes(interaction.channelId)) {
         const hint = ALLOWED_CHANNELS.map(id => `<#${id}>`).join(', ');
         return interaction.reply({ content: `🔒 Please use this in: ${hint}`, flags: MessageFlags.Ephemeral });
@@ -393,12 +466,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `🔒 You don't have permission to use this command.`, flags: MessageFlags.Ephemeral });
       }
 
-      if (commandName === 'mdt') {
+      if (commandName === 'arrest') {
         const makePrivate = interaction.options.getBoolean('private') ?? false;
         const acked = await safeDefer(interaction, makePrivate);
-        if (!acked) return; // expired; stop processing to avoid crash
+        if (!acked) return;
 
-        const type = interaction.options.getString('type');
         const officer = interaction.options.getString('officer');
         const suspect = interaction.options.getString('suspect');
         const charge = interaction.options.getString('charge');
@@ -407,16 +479,14 @@ client.on('interactionCreate', async (interaction) => {
         const summary = interaction.options.getString('summary');
         const evidenceImage = interaction.options.getAttachment('evidenceimage');
 
-        // Case number
         const day = yyyymmddPH();
-        const prefix = type === 'Arrest Log' ? 'AL' : 'IR';
-        const nextSeq = await getNextCaseSeq(type);
-        const caseNum = `${prefix}-${day}-${nextSeq}`;
+        const nextSeq = await getNextCaseSeq('Arrest Log');
+        const caseNum = `AL-${day}-${nextSeq}`;
 
         const draft = {
           userId: interaction.user.id,
           guildId: interaction.guildId,
-          type,
+          type: 'Arrest Log',
           caseNum,
           seq: nextSeq,
           date: datePH(),
@@ -432,15 +502,13 @@ client.on('interactionCreate', async (interaction) => {
         };
         sessions.set(sessionKey(interaction), draft);
 
-        // Penalties
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         const totals = sumPenalties(pIndex, draft.charge);
 
-        const embed = buildMdtEmbed(draft, interaction.user, totals);
-        const buttons = buildMdtButtons();
+        const embed = buildArrestEmbed(draft, interaction.user, totals);
+        const buttons = buildArrestButtons();
 
-        // Thread
         const thread = await interaction.channel.threads.create({ name: draft.caseNum, autoArchiveDuration: 1440 });
         draft.threadId = thread.id;
         sessions.set(sessionKey(interaction), draft);
@@ -451,8 +519,61 @@ client.on('interactionCreate', async (interaction) => {
         draft.messageId = msg.id;
         sessions.set(sessionKey(interaction), draft);
 
-        // Audit
-        await logAudit(interaction.guild, `🟡 Draft started: **${draft.caseNum}** by <@${draft.userId}>`, embed);
+        await logAudit(interaction.guild, `🟡 Arrest draft started: **${draft.caseNum}** by <@${draft.userId}>`, embed);
+      }
+
+      if (commandName === 'incident') {
+        const makePrivate = interaction.options.getBoolean('private') ?? false;
+        const acked = await safeDefer(interaction, makePrivate);
+        if (!acked) return;
+
+        const officer = interaction.options.getString('officer');
+        const location = interaction.options.getString('location');
+        const eventType = interaction.options.getString('eventtype');
+        const summary = interaction.options.getString('summary');
+        const victim = interaction.options.getString('victim');
+        const suspect = interaction.options.getString('suspect');
+        const witness = interaction.options.getString('witness');
+        const evidenceImage = interaction.options.getAttachment('evidenceimage');
+
+        const day = yyyymmddPH();
+        const nextSeq = await getNextCaseSeq('Incident Report');
+        const caseNum = `IR-${day}-${nextSeq}`;
+
+        const draft = {
+          userId: interaction.user.id,
+          guildId: interaction.guildId,
+          type: 'Incident Report',
+          caseNum,
+          seq: nextSeq,
+          dateTime: dateTimePH(),
+          officer: officer?.trim(),
+          location: location?.trim(),
+          eventType: eventType?.trim() || '',
+          summary: summary?.trim(),
+          victim: victim?.trim() || '',
+          suspect: suspect?.trim() || '',
+          witness: witness?.trim() || '',
+          evidenceImage,
+          messageId: null,
+          threadId: null,
+        };
+        sessions.set(sessionKey(interaction), draft);
+
+        const embed = buildIncidentEmbed(draft, interaction.user);
+        const buttons = buildIncidentButtons();
+
+        const thread = await interaction.channel.threads.create({ name: draft.caseNum, autoArchiveDuration: 1440 });
+        draft.threadId = thread.id;
+        sessions.set(sessionKey(interaction), draft);
+
+        await interaction.editReply({ content: `🧵 Moved preview to thread: <#${thread.id}>` });
+
+        const msg = await thread.send({ embeds: [embed], components: [buttons] });
+        draft.messageId = msg.id;
+        sessions.set(sessionKey(interaction), draft);
+
+        await logAudit(interaction.guild, `🟡 Incident draft started: **${draft.caseNum}** by <@${draft.userId}>`, embed);
       }
 
       if (commandName === 'officerstats') {
@@ -474,7 +595,7 @@ client.on('interactionCreate', async (interaction) => {
           const incidentRows = incidentRes.data.values || [];
 
           const arrestCases = arrestRows.filter((r) => (r?.[2] || '').toLowerCase() === officerName.toLowerCase()).length;
-          const incidentCases = incidentRows.filter((r) => (r?.[2] || '').toLowerCase() === officerName.toLowerCase()).length;
+          const incidentCases = incidentRows.filter((r) => (r?.[6] || '').toLowerCase() === officerName.toLowerCase()).length;
           const totalCases = arrestCases + incidentCases;
 
           const statsEmbed = new EmbedBuilder()
@@ -496,15 +617,14 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ---------- 🔘 BUTTONS ----------
+    // ---------- 📘 BUTTONS ----------
     else if (interaction.isButton()) {
       const key = sessionKey(interaction);
       const draft = sessions.get(key);
 
-      // For normal draft buttons, require an active draft
       if (!interaction.customId.startsWith('charges_')) {
         if (!draft) {
-          return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: '⚠️ No active MDT draft. Use **/arrest** or **/incident**.', flags: MessageFlags.Ephemeral });
         }
         if (interaction.user.id !== draft.userId) {
           return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
@@ -532,9 +652,14 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '📍 Pick a location:', components: rows, flags: MessageFlags.Ephemeral });
       }
 
+      if (interaction.customId === 'pick_event_type') {
+        const rows = buildEventTypeMenu();
+        return interaction.reply({ content: '🎯 Pick an event type:', components: rows, flags: MessageFlags.Ephemeral });
+      }
+
       // Pagination nav buttons for charge menus
       if (interaction.customId.startsWith('charges_prev_') || interaction.customId.startsWith('charges_next_')) {
-        const parts = interaction.customId.split('_'); // ['charges','prev','<page>'] or ['charges','next','<page>']
+        const parts = interaction.customId.split('_');
         const dir = parts[1];
         let page = Number(parts[2] || 0);
         page = dir === 'next' ? page + 1 : page - 1;
@@ -552,104 +677,183 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.update({ content: '✅ Charge picker closed.', components: [] });
       }
 
-      if (interaction.customId === 'confirm_mdt') {
-  // Ensure we still have the draft
-  const key = sessionKey(interaction);
-  const draft = sessions.get(key);
-  if (!draft) {
-    return interaction.reply({ content: '⚠️ Draft expired. Use **/mdt** again.', flags: MessageFlags.Ephemeral });
-  }
+      if (interaction.customId === 'confirm_arrest') {
+        const key = sessionKey(interaction);
+        const draft = sessions.get(key);
+        if (!draft) {
+          return interaction.reply({ content: '⚠️ Draft expired. Use **/arrest** again.', flags: MessageFlags.Ephemeral });
+        }
 
-  // Recompute next sequence to avoid race conditions & set caseNum
-  const nextSeq = await getNextCaseSeq(draft.type);
-  const day = yyyymmddPH();
-  const prefix = draft.type === 'Arrest Log' ? 'AL' : 'IR';
-  draft.seq = nextSeq;
-  draft.caseNum = `${prefix}-${day}-${nextSeq}`;
+        // Recompute next sequence to avoid race conditions
+        const nextSeq = await getNextCaseSeq(draft.type);
+        const day = yyyymmddPH();
+        draft.seq = nextSeq;
+        draft.caseNum = `AL-${day}-${nextSeq}`;
 
-  const row = [
-    draft.caseNum,
-    draft.date,
-    draft.officer,
-    draft.suspect,
-    draft.charge,
-    draft.location,
-    draft.evidence,
-    draft.summary || 'No summary provided',
-    draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
-  ];
-  const range = draft.type === 'Arrest Log' ? 'Arrest Log!A1' : 'Incident Report!A1';
+        const row = [
+          draft.caseNum,
+          draft.date,
+          draft.officer,
+          draft.suspect,
+          draft.charge,
+          draft.location,
+          draft.evidence,
+          draft.summary || 'No summary provided',
+          draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
+        ];
+        const range = 'Arrest Log!A1';
 
-  try {
-    // 1) Append to Google Sheets
-    const authClient = await auth.getClient();
-    const resp = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range,
-      valueInputOption: 'RAW',
-      resource: { values: [row] },
-      auth: authClient,
-    });
+        try {
+          const authClient = await auth.getClient();
+          const resp = await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range,
+            valueInputOption: 'RAW',
+            resource: { values: [row] },
+            auth: authClient,
+          });
 
-    // 2) Try to build a direct row link
-    let rowLink = '';
-    try {
-      const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
-      const rowNumMatch = updatedRange.match(/!.*?(\\d+):/);
-      const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
-      const gid = draft.type === 'Arrest Log' ? ARREST_GID : INCIDENT_GID;
-      if (rowNum && gid) {
-        rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}&range=A${rowNum}:I${rowNum}`;
+          let rowLink = '';
+          try {
+            const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
+            const rowNumMatch = updatedRange.match(/!.*?(\d+):/);
+            const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
+            if (rowNum && ARREST_GID) {
+              rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${ARREST_GID}&range=A${rowNum}:I${rowNum}`;
+            }
+          } catch {}
+
+          const penalties = await readPenaltiesFromSheet();
+          const pIndex = buildPenaltyIndex(penalties);
+          const totals = sumPenalties(pIndex, draft.charge);
+
+          const finalEmbed = new EmbedBuilder()
+            .setColor(0x2ecc71)
+            .setTitle(`✅ ${draft.caseNum} — Arrest Log`)
+            .addFields(
+              { name: '👮 Officer', value: draft.officer || '—', inline: true },
+              { name: '🧑 Suspect', value: draft.suspect || '—', inline: true },
+              { name: '📅 Date', value: draft.date || '—', inline: true },
+              { name: '📍 Location', value: draft.location || '—', inline: true },
+              { name: '⚖️ Charges', value: draft.charge || '—', inline: false },
+              { name: '💸 Total Fine', value: fmtMoney(totals.fine), inline: true },
+              { name: '⏱️ Jail Time', value: `${totals.jail} min`, inline: true },
+            )
+            .setFooter({ text: 'Logged to Google Sheets' })
+            .setTimestamp();
+          if (totals.found.length) {
+            finalEmbed.addFields({ name: '🧮 Breakdown', value: totals.found.join('\n').slice(0, 1024) });
+          }
+          if (draft.summary) finalEmbed.addFields({ name: '🗒️ Summary', value: String(draft.summary).slice(0, 1024) });
+          if (draft.evidence) finalEmbed.addFields({ name: '🧾 Evidence', value: String(draft.evidence).slice(0, 1024) });
+          if (draft.evidenceImage?.url) finalEmbed.setImage(draft.evidenceImage.url);
+          if (rowLink) finalEmbed.setURL(rowLink);
+
+          await interaction.update({ embeds: [finalEmbed], components: [] });
+
+          if (rowLink) {
+            await interaction.followUp({ content: `🔗 **Open row:** ${rowLink}` });
+          }
+
+          await logAudit(interaction.guild, `🟢 Arrest confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, finalEmbed);
+          sessions.delete(key);
+        } catch (err) {
+          console.error('🚨 Error logging arrest:', err);
+          try {
+            await interaction.update({ content: '❌ Error logging arrest. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
+          } catch {}
+          await logAudit(interaction.guild, `🔴 Arrest confirm failed for **${draft.caseNum}** (${err.message})`, null);
+        }
       }
-    } catch {}
 
-    // 3) Recompute penalties and totals for final embed
-    const penalties = await readPenaltiesFromSheet();
-    const pIndex = buildPenaltyIndex(penalties);
-    const totals = sumPenalties(pIndex, draft.charge);
+      if (interaction.customId === 'confirm_incident') {
+        const key = sessionKey(interaction);
+        const draft = sessions.get(key);
+        if (!draft) {
+          return interaction.reply({ content: '⚠️ Draft expired. Use **/incident** again.', flags: MessageFlags.Ephemeral });
+        }
 
-    // 4) Build FINAL, PUBLIC embed with all details
-    const finalEmbed = new EmbedBuilder()
-      .setColor(0x2ecc71)
-      .setTitle(`✅ ${draft.caseNum} — ${draft.type}`)
-      .addFields(
-        { name: '👮 Officer', value: draft.officer || '—', inline: true },
-        { name: '🧍 Suspect', value: draft.suspect || '—', inline: true },
-        { name: '📅 Date', value: draft.date || '—', inline: true },
-        { name: '📍 Location', value: draft.location || '—', inline: true },
-        { name: '⚖️ Charges', value: draft.charge || '—', inline: false },
-        { name: '💸 Total Fine', value: fmtMoney(totals.fine), inline: true },
-        { name: '⏱️ Jail Time', value: `${totals.jail} min`, inline: true },
-      )
-      .setFooter({ text: 'Logged to Google Sheets' })
-      .setTimestamp();
-    if (totals.found.length) {
-      finalEmbed.addFields({ name: '🧮 Breakdown', value: totals.found.join('\\n').slice(0, 1024) });
-    }
-    if (draft.summary) finalEmbed.addFields({ name: '🗒️ Summary', value: String(draft.summary).slice(0, 1024) });
-    if (draft.evidence) finalEmbed.addFields({ name: '🧾 Evidence', value: String(draft.evidence).slice(0, 1024) });
-    if (draft.evidenceImage?.url) finalEmbed.setImage(draft.evidenceImage.url);
-    if (rowLink) finalEmbed.setURL(rowLink);
+        // Recompute next sequence to avoid race conditions
+        const nextSeq = await getNextCaseSeq(draft.type);
+        const day = yyyymmddPH();
+        draft.seq = nextSeq;
+        draft.caseNum = `IR-${day}-${nextSeq}`;
 
-    // 5) Replace the preview message with the final embed so everyone sees it
-    await interaction.update({ embeds: [finalEmbed], components: [] });
+        const row = [
+          draft.caseNum,
+          draft.dateTime,
+          draft.location,
+          draft.eventType || 'Not specified',
+          draft.summary || 'No summary provided',
+          draft.victim || 'None',
+          draft.suspect || 'None',
+          draft.witness || 'None',
+          draft.officer,
+          draft.evidenceImage ? draft.evidenceImage.url : 'No image provided',
+        ];
+        const range = 'Incident Report!A1';
 
-    // 6) Also send a plain "Open row" message
-    if (rowLink) {
-      await interaction.followUp({ content: `🔗 **Open row:** ${rowLink}` });
-    }
+        try {
+          const authClient = await auth.getClient();
+          const resp = await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range,
+            valueInputOption: 'RAW',
+            resource: { values: [row] },
+            auth: authClient,
+          });
 
-    // 7) Audit & cleanup
-    await logAudit(interaction.guild, `🟢 Confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, finalEmbed);
-    sessions.delete(key);
-  } catch (err) {
-    console.error('🚨 Error logging MDT report:', err);
-    try {
-      await interaction.update({ content: '❌ Error logging MDT report. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
-    } catch {}
-    await logAudit(interaction.guild, `🔴 Confirm failed for **${draft.caseNum}** (${err.message})`, null);
-  }
-}
+          let rowLink = '';
+          try {
+            const updatedRange = resp?.data?.updates?.updatedRange || resp?.updates?.updatedRange || '';
+            const rowNumMatch = updatedRange.match(/!.*?(\d+):/);
+            const rowNum = rowNumMatch ? parseInt(rowNumMatch[1], 10) : null;
+            if (rowNum && INCIDENT_GID) {
+              rowLink = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${INCIDENT_GID}&range=A${rowNum}:J${rowNum}`;
+            }
+          } catch {}
+
+          const finalEmbed = new EmbedBuilder()
+            .setColor(0x2ecc71)
+            .setTitle(`✅ ${draft.caseNum} — Incident Report`)
+            .addFields(
+              { name: '👮 Officer', value: draft.officer || '—', inline: true },
+              { name: '📅 Date & Time', value: draft.dateTime || '—', inline: true },
+              { name: '📍 Location', value: draft.location || '—', inline: true },
+              { name: '🎯 Event Type', value: draft.eventType || 'Not specified', inline: true },
+              { name: '🗒️ Summary', value: (draft.summary || 'No summary provided').slice(0, 1024), inline: false },
+            )
+            .setFooter({ text: 'Logged to Google Sheets' })
+            .setTimestamp();
+
+          const people = [];
+          if (draft.victim) people.push(`**Victim:** ${draft.victim}`);
+          if (draft.suspect) people.push(`**Suspect:** ${draft.suspect}`);
+          if (draft.witness) people.push(`**Witness:** ${draft.witness}`);
+          
+          if (people.length) {
+            finalEmbed.addFields({ name: '👥 People Involved', value: people.join('\n') });
+          }
+
+          if (draft.evidenceImage?.url) finalEmbed.setImage(draft.evidenceImage.url);
+          if (rowLink) finalEmbed.setURL(rowLink);
+
+          await interaction.update({ embeds: [finalEmbed], components: [] });
+
+          if (rowLink) {
+            await interaction.followUp({ content: `🔗 **Open row:** ${rowLink}` });
+          }
+
+          await logAudit(interaction.guild, `🟢 Incident confirmed: **${draft.caseNum}** by <@${interaction.user.id}>`, finalEmbed);
+          sessions.delete(key);
+        } catch (err) {
+          console.error('🚨 Error logging incident:', err);
+          try {
+            await interaction.update({ content: '❌ Error logging incident. Check Google credentials & spreadsheet ID.', components: [], embeds: [] });
+          } catch {}
+          await logAudit(interaction.guild, `🔴 Incident confirm failed for **${draft.caseNum}** (${err.message})`, null);
+        }
+      }
 
       if (interaction.customId === 'cancel_mdt') {
         sessions.delete(key);
@@ -657,11 +861,11 @@ client.on('interactionCreate', async (interaction) => {
         await logAudit(interaction.guild, `🟠 Canceled draft for **${draft.caseNum}** by <@${interaction.user.id}>`, null);
       }
 
-      if (interaction.customId === 'edit_mdt') {
+      if (interaction.customId === 'edit_arrest') {
         draft.messageId = interaction.message?.id || draft.messageId;
         sessions.set(key, draft);
 
-        const modal = new ModalBuilder().setCustomId('mdt_modal').setTitle('✏️ Edit MDT Draft');
+        const modal = new ModalBuilder().setCustomId('arrest_modal').setTitle('✏️ Edit Arrest Draft');
 
         const mkShort = (id, label, value, required = true) =>
           new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required).setValue((value || '').slice(0, 100));
@@ -678,13 +882,35 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.showModal(modal);
       }
+
+      if (interaction.customId === 'edit_incident') {
+        draft.messageId = interaction.message?.id || draft.messageId;
+        sessions.set(key, draft);
+
+        const modal = new ModalBuilder().setCustomId('incident_modal').setTitle('✏️ Edit Incident Draft');
+
+        const mkShort = (id, label, value, required = true) =>
+          new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(required).setValue((value || '').slice(0, 100));
+        const mkLong = (id, label, value, required = false) =>
+          new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Paragraph).setRequired(required).setValue((value || '').slice(0, 1024));
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(mkShort('officer', 'Officer', draft.officer)),
+          new ActionRowBuilder().addComponents(mkShort('location', 'Location', draft.location)),
+          new ActionRowBuilder().addComponents(mkLong('summary', 'Summary', draft.summary, true)),
+          new ActionRowBuilder().addComponents(mkShort('victim', 'Victim (optional)', draft.victim, false)),
+          new ActionRowBuilder().addComponents(mkShort('suspect', 'Suspect (optional)', draft.suspect, false)),
+        );
+
+        await interaction.showModal(modal);
+      }
     }
 
     // ---------- 🧾 SELECT MENUS ----------
     else if (interaction.isStringSelectMenu()) {
       const key = sessionKey(interaction);
       const draft = sessions.get(key);
-      if (!draft) return interaction.reply({ content: '⚠️ No active MDT draft. Use **/mdt**.', flags: MessageFlags.Ephemeral });
+      if (!draft) return interaction.reply({ content: '⚠️ No active MDT draft. Use **/arrest** or **/incident**.', flags: MessageFlags.Ephemeral });
       if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
 
       if (interaction.customId.startsWith('sel_charge_')) {
@@ -696,8 +922,8 @@ client.on('interactionCreate', async (interaction) => {
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         const totals = sumPenalties(pIndex, draft.charge);
-        const embed = buildMdtEmbed(draft, interaction.user, totals);
-        const buttons = buildMdtButtons();
+        const embed = buildArrestEmbed(draft, interaction.user, totals);
+        const buttons = buildArrestButtons();
         try {
           if (draft.messageId && interaction.channel) {
             await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
@@ -711,11 +937,18 @@ client.on('interactionCreate', async (interaction) => {
         draft.location = interaction.values[0];
         sessions.set(key, draft);
 
-        const penalties = await readPenaltiesFromSheet();
-        const pIndex = buildPenaltyIndex(penalties);
-        const totals = sumPenalties(pIndex, draft.charge);
-        const embed = buildMdtEmbed(draft, interaction.user, totals);
-        const buttons = buildMdtButtons();
+        let embed, buttons;
+        if (draft.type === 'Arrest Log') {
+          const penalties = await readPenaltiesFromSheet();
+          const pIndex = buildPenaltyIndex(penalties);
+          const totals = sumPenalties(pIndex, draft.charge);
+          embed = buildArrestEmbed(draft, interaction.user, totals);
+          buttons = buildArrestButtons();
+        } else {
+          embed = buildIncidentEmbed(draft, interaction.user);
+          buttons = buildIncidentButtons();
+        }
+
         try {
           if (draft.messageId && interaction.channel) {
             await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
@@ -724,14 +957,30 @@ client.on('interactionCreate', async (interaction) => {
 
         return interaction.update({ content: `📍 Location set to **${draft.location}**.` });
       }
+
+      if (interaction.customId === 'sel_event_type') {
+        draft.eventType = interaction.values[0];
+        sessions.set(key, draft);
+
+        const embed = buildIncidentEmbed(draft, interaction.user);
+        const buttons = buildIncidentButtons();
+
+        try {
+          if (draft.messageId && interaction.channel) {
+            await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
+          }
+        } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
+
+        return interaction.update({ content: `🎯 Event type set to **${draft.eventType}**.` });
+      }
     }
 
     // ---------- 📝 MODAL SUBMISSIONS ----------
     else if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'mdt_modal') {
+      if (interaction.customId === 'arrest_modal') {
         const key = sessionKey(interaction);
         const draft = sessions.get(key);
-        if (!draft) return interaction.reply({ content: '⚠️ Draft not found. Please run **/mdt** again.', flags: MessageFlags.Ephemeral });
+        if (!draft) return interaction.reply({ content: '⚠️ Draft not found. Please run **/arrest** again.', flags: MessageFlags.Ephemeral });
         if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
 
         draft.officer = interaction.fields.getTextInputValue('officer').trim();
@@ -744,15 +993,40 @@ client.on('interactionCreate', async (interaction) => {
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         const totals = sumPenalties(pIndex, draft.charge);
-        const embed = buildMdtEmbed(draft, interaction.user, totals);
-        const buttons = buildMdtButtons();
+        const embed = buildArrestEmbed(draft, interaction.user, totals);
+        const buttons = buildArrestButtons();
         try {
           if (draft.messageId && interaction.channel) {
             await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
           }
         } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
 
-        await logAudit(interaction.guild, `✏️ Edited draft **${draft.caseNum}** by <@${interaction.user.id}>`, embed);
+        await logAudit(interaction.guild, `✏️ Edited arrest draft **${draft.caseNum}** by <@${interaction.user.id}>`, embed);
+        return interaction.reply({ content: '✅ Draft updated.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (interaction.customId === 'incident_modal') {
+        const key = sessionKey(interaction);
+        const draft = sessions.get(key);
+        if (!draft) return interaction.reply({ content: '⚠️ Draft not found. Please run **/incident** again.', flags: MessageFlags.Ephemeral });
+        if (interaction.user.id !== draft.userId) return interaction.reply({ content: '🚫 This draft belongs to another user.', flags: MessageFlags.Ephemeral });
+
+        draft.officer = interaction.fields.getTextInputValue('officer').trim();
+        draft.location = interaction.fields.getTextInputValue('location').trim();
+        draft.summary = interaction.fields.getTextInputValue('summary').trim();
+        draft.victim = interaction.fields.getTextInputValue('victim').trim();
+        draft.suspect = interaction.fields.getTextInputValue('suspect').trim();
+        sessions.set(key, draft);
+
+        const embed = buildIncidentEmbed(draft, interaction.user);
+        const buttons = buildIncidentButtons();
+        try {
+          if (draft.messageId && interaction.channel) {
+            await interaction.channel.messages.edit(draft.messageId, { embeds: [embed], components: [buttons] });
+          }
+        } catch (e) { console.error('⚠️ Failed to edit preview message:', e); }
+
+        await logAudit(interaction.guild, `✏️ Edited incident draft **${draft.caseNum}** by <@${interaction.user.id}>`, embed);
         return interaction.reply({ content: '✅ Draft updated.', flags: MessageFlags.Ephemeral });
       }
     }
@@ -771,5 +1045,5 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log('🔐 Login successful.'))
-  .catch((e) => console.error('🔐 Login failed:', e));
+  .then(() => console.log('🔑 Login successful.'))
+  .catch((e) => console.error('🔑 Login failed:', e));
