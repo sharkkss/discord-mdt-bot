@@ -418,7 +418,8 @@ client.once('ready', async () => {
       .addStringOption((opt) => opt.setName('evidence').setDescription('Evidence details').setRequired(true))
       .addStringOption((opt) => opt.setName('summary').setDescription('Summary or note').setRequired(false))
       .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
-      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?')),
+      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?'))
+      .toJSON(),
 
     new SlashCommandBuilder()
       .setName('incident')
@@ -431,38 +432,27 @@ client.once('ready', async () => {
       .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name(s)').setRequired(false))
       .addStringOption((opt) => opt.setName('witness').setDescription('Witness name(s)').setRequired(false))
       .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
-      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?')),
+      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?'))
+      .toJSON(),
 
     new SlashCommandBuilder()
       .setName('officerstats')
       .setDescription('📊 View officer stats')
-      .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true)),
+      .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
+      .toJSON(),
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   
-  // First, clear old commands to ensure fresh registration
-  console.log('🧹 Clearing old commands...');
-  for (const id of guildIds) {
-    try {
-      await rest.put(Routes.applicationGuildCommands(clientId, id), { body: [] });
-      console.log(`✅ Cleared commands for guild ${id}`);
-    } catch (err) {
-      console.error(`⚠️ Failed to clear commands for ${id}:`, err);
-    }
-  }
-
-  // Wait a moment then register new commands
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  console.log('📝 Registering new commands...');
+  console.log('📝 Registering commands...');
   for (const id of guildIds) {
     try {
       const result = await rest.put(Routes.applicationGuildCommands(clientId, id), { body: commands });
-      console.log(`🧭 Registered ${result.length} commands for guild ${id} ✅`);
-      console.log(`   Commands: ${result.map(c => `/${c.name}`).join(', ')}`);
+      console.log(`✅ Guild ${id}: Registered ${result.length} commands`);
+      result.forEach(cmd => console.log(`   /${cmd.name} - ${cmd.description}`));
     } catch (err) {
-      console.error(`🚨 Failed to register commands for ${id}:`, err);
+      console.error(`❌ Failed to register commands for guild ${id}:`, err.message);
+      if (err.rawError) console.error('   Raw error:', JSON.stringify(err.rawError, null, 2));
     }
   }
 });
