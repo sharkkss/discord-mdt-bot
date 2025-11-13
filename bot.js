@@ -440,10 +440,27 @@ client.once('ready', async () => {
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  
+  // First, clear old commands to ensure fresh registration
+  console.log('🧹 Clearing old commands...');
   for (const id of guildIds) {
     try {
-      await rest.put(Routes.applicationGuildCommands(clientId, id), { body: commands });
-      console.log(`🧭 Commands registered for guild ${id} ✅`);
+      await rest.put(Routes.applicationGuildCommands(clientId, id), { body: [] });
+      console.log(`✅ Cleared commands for guild ${id}`);
+    } catch (err) {
+      console.error(`⚠️ Failed to clear commands for ${id}:`, err);
+    }
+  }
+
+  // Wait a moment then register new commands
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  console.log('📝 Registering new commands...');
+  for (const id of guildIds) {
+    try {
+      const result = await rest.put(Routes.applicationGuildCommands(clientId, id), { body: commands });
+      console.log(`🧭 Registered ${result.length} commands for guild ${id} ✅`);
+      console.log(`   Commands: ${result.map(c => `/${c.name}`).join(', ')}`);
     } catch (err) {
       console.error(`🚨 Failed to register commands for ${id}:`, err);
     }
