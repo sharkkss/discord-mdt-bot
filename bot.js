@@ -406,33 +406,37 @@ client.once('ready', async () => {
     status: 'online',
   });
 
-  // 🛠️ Slash commands
+  // 🛠️ Slash commands (required options MUST come before optional ones)
   const commands = [
     new SlashCommandBuilder()
       .setName('arrest')
       .setDescription('🚓 Create an arrest log entry')
+      // Required options first
       .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
       .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name').setRequired(true))
       .addStringOption((opt) => opt.setName('charge').setDescription('Charge(s) or code(s), comma-separated').setRequired(true))
       .addStringOption((opt) => opt.setName('location').setDescription('Location').setRequired(true))
       .addStringOption((opt) => opt.setName('evidence').setDescription('Evidence details').setRequired(true))
+      // Optional options last
       .addStringOption((opt) => opt.setName('summary').setDescription('Summary or note').setRequired(false))
-      .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
-      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?'))
+      .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image').setRequired(false))
+      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?').setRequired(false))
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('incident')
       .setDescription('📝 Create an incident report')
+      // Required options first
       .addStringOption((opt) => opt.setName('officer').setDescription('Officer name').setRequired(true))
       .addStringOption((opt) => opt.setName('location').setDescription('Location').setRequired(true))
-      .addStringOption((opt) => opt.setName('eventtype').setDescription('Type of event (or use picker)').setRequired(false))
       .addStringOption((opt) => opt.setName('summary').setDescription('Short summary of what happened').setRequired(true))
+      // Optional options last
+      .addStringOption((opt) => opt.setName('eventtype').setDescription('Type of event (or use picker)').setRequired(false))
       .addStringOption((opt) => opt.setName('victim').setDescription('Victim name(s)').setRequired(false))
       .addStringOption((opt) => opt.setName('suspect').setDescription('Suspect name(s)').setRequired(false))
       .addStringOption((opt) => opt.setName('witness').setDescription('Witness name(s)').setRequired(false))
-      .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image'))
-      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?'))
+      .addAttachmentOption((opt) => opt.setName('evidenceimage').setDescription('Evidence image').setRequired(false))
+      .addBooleanOption((opt) => opt.setName('private').setDescription('Make the initial preview private (ephemeral)?').setRequired(false))
       .toJSON(),
 
     new SlashCommandBuilder()
