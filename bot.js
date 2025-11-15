@@ -713,24 +713,29 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (interaction.customId === 'pick_charges') {
+        // Acknowledge immediately
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
         const penalties = await readPenaltiesFromSheet();
         const pIndex = buildPenaltyIndex(penalties);
         draft.penaltyIndex = pIndex;
         sessions.set(key, draft);
 
         const { rows } = buildChargeMenus(pIndex, 0);
-        return interaction.reply({
+        return interaction.editReply({
           content: '🧾 Pick charges by group (use Prev/Next to switch pages):',
           components: rows,
-          flags: MessageFlags.Ephemeral,
         });
       }
 
       if (interaction.customId === 'pick_location') {
+        // Acknowledge immediately
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
         const locs = await readLocationsFromSheet();
         const rows = buildLocationMenu(locs);
-        if (!rows.length) return interaction.reply({ content: '⚠️ No `Locations` tab or it is empty.', flags: MessageFlags.Ephemeral });
-        return interaction.reply({ content: '📍 Pick a location:', components: rows, flags: MessageFlags.Ephemeral });
+        if (!rows.length) return interaction.editReply({ content: '⚠️ No `Locations` tab or it is empty.' });
+        return interaction.editReply({ content: '📍 Pick a location:', components: rows });
       }
 
       if (interaction.customId === 'pick_event_type') {
